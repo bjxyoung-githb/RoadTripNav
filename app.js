@@ -111,20 +111,72 @@ function clearMarkers(arr) { arr.forEach((m) => state.map.removeLayer(m)); arr.l
 
 /* ============================== ORS API ============================== */
 
+function mapGeocodeFeature(f) {
+  return {
+    label: f.properties.label,
+    lat: f.geometry.coordinates[1],
+    lon: f.geometry.coordinates[0],
+    layer: f.properties.layer || null, // 'address' | 'street' | 'locality' | 'region' | 'venue' | ...
+    confidence: f.properties.confidence || null,
+  };
+}
+
 async function orsGeocode(text) {
   const key = state.settings.orsKey;
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
   const focus = getStartCoords();
-  let url = `https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&size=6&boundary.country=US`;
+  let url = `https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&size=8&boundary.country=US`;
   if (focus) url += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error('Geocoding failed (' + res.status + ')');
   const json = await res.json();
-  return (json.features || []).map((f) => ({
-    label: f.properties.label,
-    lat: f.geometry.coordinates[1],
-    lon: f.geometry.coordinates[0],
-  }));
+  let results = (json.features || []).map(mapGeocodeFeature);
+
+  // If the query looks like it includes a street number but nothing at
+  // address-level precision came back, the free-text parser may have failed
+  // to split the address correctly. Retry with a structured query, which
+  // parses each part (address/locality/region) separately and often finds
+  // an exact match the plain search missed.
+  const hasHouseNumber = /^\s*\d+\s+\S/.test(text);
+  const hasAddressHit = results.some((r) => r.layer === 'address');
+  if (hasHouseNumber && !hasAddressHit) {
+    try {
+      const structured = await orsGeocodeStructured(text, focus);
+      if (structured.length) {
+        // Put any address-level structured hits first, then the rest, deduped by label.
+        const seen = new Set(results.map((r) => r.label));
+        structured.forEach((r) => { if (!seen.has(r.label)) { results.push(r); seen.add(r.label); } });
+        results.sort((a, b) => (a.layer === 'address' ? -1 : 0) - (b.layer === 'address' ? -1 : 0));
+      }
+    } catch (e) { /* structured search is a best-effort extra try; ignore failures */ }
+  }
+  return results;
+}
+
+// Naive split of "123 Main St, Flagstaff, AZ 86001" into address/locality/region/postalcode
+// for Pelias' structured search endpoint, which parses each field independently instead
+// of relying on free-text parsing (which sometimes drops the house number).
+async function orsGeocodeStructured(text, focus) {
+  const key = state.settings.orsKey;
+  const parts = text.split(',').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length) return [];
+  const address = parts[0];
+  const locality = parts[1] || '';
+  let region = '', postalcode = '';
+  if (parts[2]) {
+    const m = parts[2].match(/^([A-Za-z .]+)\s*(\d{5})?$/);
+    if (m) { region = m[1].trim(); postalcode = m[2] || ''; } else { region = parts[2]; }
+  }
+  let url = `https://api.openrouteservice.org/geocode/search/structured?api_key=${encodeURIComponent(key)}&address=${encodeURIComponent(address)}&size=5`;
+  if (locality) url += `&locality=${encodeURIComponent(locality)}`;
+  if (region) url += `&region=${encodeURIComponent(region)}`;
+  if (postalcode) url += `&postalcode=${encodeURIComponent(postalcode)}`;
+  url += `&boundary.country=US`;
+  if (focus) url += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
+  const res = await fetch(url);
+  if (!res.ok) return [];
+  const json = await res.json();
+  return (json.features || []).map(mapGeocodeFeature);
 }
 
 async function orsRoute(start, end) {
@@ -909,6 +961,48 @@ function renderLegsList() {
   });
 }
 
+function layerBadge(layer) {
+  if (layer === 'address' || layer === 'venue') return '<span class="badge good">Exact</span>';
+  if (layer === 'street') return '<span class="badge warn">Street only</span>';
+  if (layer === 'postalcode') return '<span class="badge warn">ZIP area</span>';
+  if (layer === 'locality' || layer === 'localadmin' || layer === 'borough' || layer === 'neighbourhood') return '<span class="badge warn">City area</span>';
+  if (layer === 'region' || layer === 'county' || layer === 'macroregion') return '<span class="badge bad">Region only</span>';
+  return '';
+}
+
+// Draggable-pin "fine-tune" map shown after picking a search result, so
+// imprecise geocoding (e.g. an address ORS's database doesn't have,
+// falling back to a street/city-level point) can always be corrected by
+// hand rather than silently leaving the route's start or end off-target.
+function ensureFineTuneMap(key, lat, lon, onChange) {
+  const containerId = key + 'FineTune';
+  const mapDivId = key + 'FineTuneMap';
+  const container = document.getElementById(containerId);
+  container.classList.remove('hidden');
+  const mapKey = key + 'FineMap';
+  const markerKey = key + 'FineMarker';
+
+  const setup = () => {
+    if (!state[mapKey]) {
+      const map = L.map(mapDivId, { zoomControl: false, attributionControl: false }).setView([lat, lon], 17);
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+      const marker = L.marker([lat, lon], { draggable: true }).addTo(map);
+      marker.on('dragend', () => { const p = marker.getLatLng(); onChange(p.lat, p.lng); });
+      map.on('click', (e) => { marker.setLatLng(e.latlng); onChange(e.latlng.lat, e.latlng.lng); });
+      state[mapKey] = map;
+      state[markerKey] = marker;
+    } else {
+      state[mapKey].invalidateSize();
+      state[mapKey].setView([lat, lon], 17);
+      state[markerKey].setLatLng([lat, lon]);
+    }
+  };
+  // Give the container a moment to actually become visible/sized before
+  // Leaflet measures it, otherwise tiles render into a zero-size box.
+  setTimeout(setup, 0);
+}
+
 function wireSetupScreen() {
   const destInput = document.getElementById('destInput');
   const destResults = document.getElementById('destResults');
@@ -923,33 +1017,46 @@ function wireSetupScreen() {
     try {
       const results = await orsGeocode(text);
       destResults.innerHTML = results.map((r, i) =>
-        `<div class="result-item" data-i="${i}">${r.label}</div>`).join('');
+        `<div class="result-item" data-i="${i}">${r.label} ${layerBadge(r.layer)}</div>`).join('');
       Array.from(destResults.children).forEach((child, i) => {
         child.onclick = () => {
           state.pendingDest = results[i];
           Array.from(destResults.children).forEach((c) => c.classList.remove('selected'));
           child.classList.add('selected');
           refreshCalcButton();
+          ensureFineTuneMap('dest', results[i].lat, results[i].lon, (lat, lon) => {
+            state.pendingDest.lat = lat;
+            state.pendingDest.lon = lon;
+          });
         };
       });
     } catch (e) {
       errEl.textContent = e.message;
     }
   }, 450);
-  destInput.addEventListener('input', (e) => { state.pendingDest = null; refreshCalcButton(); searchDest(e.target.value); });
+  destInput.addEventListener('input', (e) => {
+    state.pendingDest = null;
+    document.getElementById('destFineTune').classList.add('hidden');
+    refreshCalcButton();
+    searchDest(e.target.value);
+  });
 
   const searchStart = debounce(async (text) => {
     if (!text || text.length < 3) { startResults.innerHTML = ''; return; }
     try {
       const results = await orsGeocode(text);
       startResults.innerHTML = results.map((r, i) =>
-        `<div class="result-item" data-i="${i}">${r.label}</div>`).join('');
+        `<div class="result-item" data-i="${i}">${r.label} ${layerBadge(r.layer)}</div>`).join('');
       Array.from(startResults.children).forEach((child, i) => {
         child.onclick = () => {
           state.manualStart = results[i];
           startInput.value = results[i].label;
           startResults.innerHTML = '';
           refreshCalcButton();
+          ensureFineTuneMap('start', results[i].lat, results[i].lon, (lat, lon) => {
+            state.manualStart.lat = lat;
+            state.manualStart.lon = lon;
+          });
         };
       });
     } catch (e) {
@@ -963,8 +1070,12 @@ function wireSetupScreen() {
     startInput.value = '';
     startInput.placeholder = 'Type a starting address…';
     startInput.focus();
+    document.getElementById('startFineTune').classList.add('hidden');
   });
-  startInput.addEventListener('input', (e) => searchStart(e.target.value));
+  startInput.addEventListener('input', (e) => {
+    document.getElementById('startFineTune').classList.add('hidden');
+    searchStart(e.target.value);
+  });
 
   calcBtn.addEventListener('click', async () => {
     errEl.textContent = '';
