@@ -3,9 +3,11 @@
 A self-contained web app for your road trip: destination search, best driving
 route, live progress, turn-by-turn directions (with spoken voice guidance),
 weather ahead, road/weather alerts, upcoming gas/food/rest stops, nearby
-named mountain peaks, a fuel range planner, sunrise/sunset info, and a
-rest-break timer. Map view defaults to satellite (with road/place labels)
-and automatically switches to a plain street map below 40mph, back to
+named mountain peaks, a fuel range planner, sunrise/sunset info, a
+rest-break timer, and (optional) live trip sharing — a passcode family can
+enter to watch your position, photos/videos, and comments update in real
+time. Map view defaults to satellite (with road/place labels) and
+automatically switches to a plain street map below 40mph, back to
 satellite above 50mph.
 
 This version runs entirely on your **phone**, using the phone's own GPS —
@@ -68,9 +70,17 @@ The free tier gives you 2,000 routing requests and 1,000 geocoding
    vehicle's driving range and rest-break interval there too if you want
    those features.
 3. Allow the location permission prompt when it appears.
-4. Once "GPS: connected" shows at the top, type your destination, pick it
-   from the list, and tap **Calculate Route**.
-5. Mount your phone like you would for any GPS app and go.
+4. Once "GPS: connected" shows at the top, type your destination. Each
+   match in the list shows a tag: green "Exact" means it found that precise
+   address or place; yellow/red tags ("Street only," "City area," "Region
+   only") mean it could only match at that coarser level — common for
+   addresses its free map data doesn't have on file. Pick the closest
+   match anyway; a small satellite map will appear with a pin you can
+   **drag (or tap the map) to nudge onto the exact spot** before
+   continuing. This same fine-tune step also appears if you set a manual
+   starting point.
+5. Tap **Calculate Route**.
+6. Mount your phone like you would for any GPS app and go.
 
 Each day of the trip, just reopen the bookmark and enter that day's
 destination as a new leg — previous legs are saved on your phone and
@@ -82,7 +92,14 @@ listed so you can quickly reselect a place you've already routed to.
   your route, your live position, and the full step list with the current
   step highlighted. Spoken prompts announce each turn about a mile ahead
   and again right before it. If you drift off the calculated route, it
-  automatically recalculates (and says so out loud).
+  automatically recalculates (and says so out loud). The route can only end
+  on a road the map data marks as drivable — if your exact pin sits on a
+  private complex/HOA road or similar that isn't mapped that way, the route
+  will stop at the nearest public road instead. When that gap is more than
+  about 500 feet, a 🏠 pin marks your actual destination separately from
+  the blue route-end marker, with a warning banner, so you know you'll need
+  to finish the last stretch on foot or by eye rather than being silently
+  routed somewhere else.
 - **Miles left / ETA / speed** — computed from your live position against
   the route, refreshed continuously as your phone reports new GPS fixes.
 - **Satellite / street map** — satellite by default (with labels layered
@@ -90,6 +107,10 @@ listed so you can quickly reselect a place you've already routed to.
   a several-second delay to avoid flickering in stop-and-go traffic. Tap
   the button in the map's top-right corner to lock it to one style, or
   back to Auto.
+- **Full-screen map** — tap **⛶ Full Map** in the map's top-left corner to
+  hide the turn banner, stats, and everything below and let the map fill
+  the screen; tap **↙ Exit Full Map** in the same spot to go back to the
+  normal split view.
 - **Weather Ahead** — from the National Weather Service (free, no key,
   US only), sampled at your current spot and two points further along your
   remaining route, timed to your estimated arrival there.
@@ -104,7 +125,10 @@ listed so you can quickly reselect a place you've already routed to.
   40 miles of your current location (from OpenStreetMap), with distance and
   compass direction. This is straight-line distance, **not** a true
   line-of-sight calculation — a peak could be listed even if a closer ridge
-  actually blocks your view of it.
+  actually blocks your view of it. The closest 6 are also pinned directly on
+  the map with an always-visible name/elevation label (tap the pin for
+  distance and direction too), so you can match what you're looking at out
+  the window to what's on screen.
 - **Fuel Planner** — if you set your vehicle's range in Settings, this
   flags when the nearest known gas station ahead is farther than 80% of
   that range. It does not know your actual fuel level.
@@ -112,6 +136,17 @@ listed so you can quickly reselect a place you've already routed to.
   current location.
 - **Drive Timer** — tracks continuous driving time (based on GPS speed) and
   pops up a reminder at the interval you set in Settings.
+- **Share & Trip Log** (optional, needs one-time setup — see section 7) —
+  tap **Start Sharing This Leg** to get a 6-digit passcode. Anyone you give
+  it to can open this same web address, tap **Watch someone else's shared
+  trip**, enter the code, and see your route and a live-updating arrow at
+  your position (rotated to your direction of travel, with your current
+  speed/heading and the weather right where you are), plus any
+  photos/videos/comments you add — all without installing anything or
+  creating an account. Use the 📷 and 💬 buttons in this panel to drop a
+  geotagged photo, video, or comment; they show up as pins on both your map
+  and every viewer's map. Tap **Stop Sharing** (or **New / End Leg**) when
+  you're done; the passcode stops working.
 
 ## 4. Troubleshooting
 
@@ -127,6 +162,11 @@ listed so you can quickly reselect a place you've already routed to.
   phones block web page audio when the hardware mute switch is on).
 - **Routing/geocoding errors mentioning your API key** — double-check you
   pasted the whole key with no extra spaces in Settings.
+- **Search only offers a street/city match, not the exact address** — the
+  free map data behind search doesn't have every U.S. address on file,
+  especially newer or rural ones. Pick the closest match and use the
+  drag-the-pin step that appears afterward to correct it by hand; the
+  route uses wherever the pin ends up, not the original text match.
 - **Starlink/cellular brief dropouts** — the app will show stale/error
   states briefly and recover automatically once the connection returns;
   your route and progress tracking don't require a constant connection
@@ -134,6 +174,17 @@ listed so you can quickly reselect a place you've already routed to.
 - **Overpass (points of interest / peaks) slow or failing** — this uses a
   shared free public server (overpass-api.de) that occasionally rate-limits
   under heavy global usage; it will retry automatically on the next cycle.
+- **"Share & Trip Log" says "Not set up yet"** — you (or whoever set up this
+  copy of the app) haven't filled in `firebase-config.js` yet; see section 7.
+  This is entirely optional and everything else in the app works without it.
+- **A viewer gets "No trip found with that passcode"** — either the code was
+  mistyped, sharing was already stopped, or the trip's passcode was
+  regenerated (each time you tap **Start Sharing** you get a new one — send
+  the latest code, not an old one).
+- **Photo/video upload stuck on "Uploading…"** — large videos take a while
+  on cellular/Starlink; give it a minute. If it fails outright, check that
+  Storage is enabled on your Firebase project (section 7) and that you're
+  under the free tier's 5GB storage limit.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
@@ -148,3 +199,123 @@ listed so you can quickly reselect a place you've already routed to.
   stutter-free switching) uses somewhat more mobile data than a single map
   style would — worth knowing if you're on a limited cellular data plan as
   a backup to Starlink.
+- Trip sharing has no login for viewers by design (that's what makes it
+  zero-setup for family) — anyone who has the current 6-digit passcode can
+  watch that trip while it's active. Passcodes are random and change every
+  time you start sharing, and only your own phone (tied to a private key
+  Firebase generates the first time you use this feature) can ever post
+  location/photos/comments as you, but treat the passcode itself like a
+  house key: share it only with people you trust, and tap **Stop Sharing**
+  when you don't want it usable anymore.
+
+## 6. Running it on a PC instead of a phone (optional)
+
+A phone using its own GPS is still the recommended way to use this app.
+If you'd rather run the bigger screen of a Windows/Mac/Linux PC and feed it
+location from a phone instead, see the **`pc-relay`** folder — it's a
+small, separate add-on with its own setup steps. Once it's running, choose
+"Phone via local relay" as the Location source in the main app's Settings
+and point it at the relay's address. Everything else about the app works
+exactly the same either way.
+
+## 7. Setting up trip sharing (optional)
+
+This powers the **📡 Share & Trip Log** panel on the dashboard: a passcode
+you give to family so they can watch your live position, photos/videos, and
+comments, without installing anything or making an account. It needs a free
+**Firebase** project (Google's app-backend service) — about 10 minutes of
+one-time setup, done once by whoever is hosting this app (you). Skip this
+whole section if you don't want that feature; everything else in the app
+works fine without it.
+
+### 7a. Create the Firebase project
+
+1. Go to **console.firebase.google.com**, sign in with any Google account,
+   and click **Create a project** (or **Add project**). Give it any name
+   (e.g. "roadtrip"). You can decline Google Analytics when asked — not
+   needed here.
+2. Once it's created, on the project overview page click the **`</>`** (web)
+   icon to register a web app. Give it a nickname (e.g. "navigator") and
+   click **Register app**. You do *not* need Firebase Hosting — you're
+   already using GitHub Pages/Netlify for that.
+3. Firebase shows a code block containing a `firebaseConfig = { ... }`
+   object. Open **`firebase-config.js`** from this download in a text
+   editor, and copy your actual `apiKey`, `authDomain`, `projectId`,
+   `storageBucket`, `messagingSenderId`, and `appId` values in, replacing
+   the `"YOUR_..."` placeholders. Save the file.
+
+### 7b. Turn on the three Firebase features this uses
+
+All in the Firebase console's left sidebar, under **Build**:
+
+1. **Authentication** → **Get started** → under "Sign-in method," choose
+   **Anonymous** → toggle **Enable** → **Save**. (This lets the app quietly
+   recognize "your phone" vs. "a viewer's phone" behind the scenes, with no
+   sign-up or password for anyone.)
+2. **Firestore Database** → **Create database** → choose **Start in
+   production mode** → pick any nearby location → **Enable**. Once created,
+   go to its **Rules** tab, delete what's there, paste in the block below,
+   and click **Publish**:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /trips/{pin} {
+         allow read: if request.auth != null;
+         allow create: if request.auth != null
+                       && request.resource.data.ownerUid == request.auth.uid;
+         allow update: if request.auth != null
+                       && resource.data.ownerUid == request.auth.uid;
+         allow delete: if false;
+
+         match /events/{eventId} {
+           allow read: if request.auth != null;
+           allow create: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
+           allow update, delete: if false;
+         }
+       }
+     }
+   }
+   ```
+
+3. **Storage** → **Get started** → **Start in production mode** → same
+   location as Firestore → **Done**. Go to its **Rules** tab, replace the
+   contents with the block below, and **Publish**:
+
+   ```
+   rules_version = '2';
+   service firebase.storage {
+     match /b/{bucket}/o {
+       match /trip-media/{pin}/{ownerUid}/{fileName} {
+         allow read: if request.auth != null;
+         allow write: if request.auth != null && request.auth.uid == ownerUid
+                      && request.resource.size < 50 * 1024 * 1024
+                      && request.resource.contentType.matches('image/.*|video/.*');
+       }
+     }
+   }
+   ```
+
+These rules mean: only your own phone (recognized by the private key created
+the first time you use this feature) can ever start a trip, update its
+location, or add photos/videos/comments to it; anyone signed in (which
+happens automatically and invisibly, including for viewers) can read a trip
+they know the passcode for; nobody can overwrite or delete anything but you.
+
+### 7c. Upload and use it
+
+Upload the edited `firebase-config.js` to your GitHub repo alongside
+`index.html`, `app.js`, and `style.css` (same folder). Reload the app — the
+**📡 Share & Trip Log** panel on the dashboard should now offer **Start
+Sharing This Leg** instead of "Not set up yet." That's it; no further setup
+is needed for the people you share the passcode with.
+
+**Free tier note:** Firebase's free "Spark" plan (no credit card required)
+includes far more Firestore reads/writes and Storage than a two-week trip
+with a handful of family watching will use. If you ever see a Firebase
+billing prompt, you've almost certainly hit an unrelated project setting,
+not actual usage — the free limits reset daily and are generous (50K
+reads + 20K writes/day, 1GB stored data, 5GB file storage, 10GB/month
+download).
