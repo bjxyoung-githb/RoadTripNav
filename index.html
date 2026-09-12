@@ -59,10 +59,18 @@
       <button id="manualStartBtn" class="ghost-btn small">Set manually</button>
     </div>
     <div id="startResults" class="results-list"></div>
+    <div id="startFineTune" class="fine-tune hidden">
+      <div class="hint">Drag the pin (or tap the map) if this isn't the exact spot:</div>
+      <div id="startFineTuneMap" class="fine-tune-map"></div>
+    </div>
 
     <label>Destination city or address</label>
     <input id="destInput" type="text" placeholder="e.g. Grand Canyon National Park, AZ">
     <div id="destResults" class="results-list"></div>
+    <div id="destFineTune" class="fine-tune hidden">
+      <div class="hint">Drag the pin (or tap the map) if this isn't the exact spot:</div>
+      <div id="destFineTuneMap" class="fine-tune-map"></div>
+    </div>
 
     <label>Label this leg (optional)</label>
     <input id="legLabelInput" type="text" placeholder="e.g. Day 3 - to Sedona">
