@@ -34,10 +34,10 @@
 // these values.
 
 window.FIREBASE_CONFIG = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID",
+  apiKey: "AIzaSyCT5EYnIgtbKm_9_toXt7qFHebyYzpoqBI",
+  authDomain: "roadtripnav-share-my-location.firebaseapp.com",
+  projectId: "roadtripnav-share-my-location",
+  storageBucket: "roadtripnav-share-my-location.firebasestorage.app",
+  messagingSenderId: "1099257402786",
+  appId: "1:1099257402786:web:f8f7caf446407440968efb",
 };
