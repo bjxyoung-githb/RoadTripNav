@@ -5,7 +5,7 @@ route, live progress, turn-by-turn directions (with spoken voice guidance),
 weather ahead, road/weather alerts, upcoming gas/food/rest stops, nearby
 named mountain peaks, a fuel range planner, sunrise/sunset info, a
 rest-break timer, and (optional) live trip sharing — a passcode family can
-enter to watch your position, photos/videos, and comments update in real
+enter to watch your position, photos, videos, and comments update in real
 time. Map view defaults to satellite (with road/place labels) and
 automatically switches to a plain street map below 40mph, back to
 satellite above 50mph.
@@ -143,10 +143,16 @@ listed so you can quickly reselect a place you've already routed to.
   your position (rotated to your direction of travel, with your current
   speed/heading and the weather right where you are), plus any
   photos/videos/comments you add — all without installing anything or
-  creating an account. Use the 📷 and 💬 buttons in this panel to drop a
-  geotagged photo, video, or comment; they show up as pins on both your map
-  and every viewer's map. Tap **Stop Sharing** (or **New / End Leg**) when
-  you're done; the passcode stops working.
+  creating an account. Use the 📷, 🎥, and 💬 buttons in this panel to drop
+  a geotagged photo, video link, or comment; they show up as pins on both
+  your map and every viewer's map. Photos are automatically
+  shrunk/compressed and stored right in the app to keep this feature
+  entirely free (see section 7). Video works a little differently: record
+  it with your phone's normal camera app, upload it to Google Drive (or
+  wherever you like), set its sharing to "Anyone with the link," and paste
+  that link in — the app never handles the video file itself, just the
+  link, which is why it stays free too. Tap **Stop Sharing** (or **New /
+  End Leg**) when you're done; the passcode stops working.
 
 ## 4. Troubleshooting
 
@@ -181,10 +187,18 @@ listed so you can quickly reselect a place you've already routed to.
   mistyped, sharing was already stopped, or the trip's passcode was
   regenerated (each time you tap **Start Sharing** you get a new one — send
   the latest code, not an old one).
-- **Photo/video upload stuck on "Uploading…"** — large videos take a while
-  on cellular/Starlink; give it a minute. If it fails outright, check that
-  Storage is enabled on your Firebase project (section 7) and that you're
-  under the free tier's 5GB storage limit.
+- **"Photo is too large to fit even after compression"** — very rare; means
+  the app shrank the photo as far as it reasonably can and it still won't
+  fit. Try a different photo, or a screenshot of it, instead.
+- **There's no "upload video" button** — intentional; see section 7 for why.
+  Use the **🎥 Video Link** button instead — it links out to a video you've
+  already uploaded to Google Drive rather than uploading through the app.
+- **Video thumbnail doesn't show, just a 🎥 icon** — this happens if the
+  Drive link's sharing isn't set to "Anyone with the link" (Drive won't
+  serve a public thumbnail for a restricted file), or the link isn't a
+  standard Drive share link. Tapping it still opens the video in Drive
+  either way — double-check the sharing setting if you want the preview
+  image too.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
@@ -204,7 +218,7 @@ listed so you can quickly reselect a place you've already routed to.
   watch that trip while it's active. Passcodes are random and change every
   time you start sharing, and only your own phone (tied to a private key
   Firebase generates the first time you use this feature) can ever post
-  location/photos/comments as you, but treat the passcode itself like a
+  location/photos/videos/comments as you, but treat the passcode itself like a
   house key: share it only with people you trust, and tap **Stop Sharing**
   when you don't want it usable anymore.
 
@@ -221,12 +235,24 @@ exactly the same either way.
 ## 7. Setting up trip sharing (optional)
 
 This powers the **📡 Share & Trip Log** panel on the dashboard: a passcode
-you give to family so they can watch your live position, photos/videos, and
-comments, without installing anything or making an account. It needs a free
-**Firebase** project (Google's app-backend service) — about 10 minutes of
-one-time setup, done once by whoever is hosting this app (you). Skip this
-whole section if you don't want that feature; everything else in the app
-works fine without it.
+you give to family so they can watch your live position, photos, videos,
+and comments, without installing anything or making an account. It needs a
+free **Firebase** project (Google's app-backend service) — about 10 minutes
+of one-time setup, done once by whoever is hosting this app (you). Skip
+this whole section if you don't want that feature; everything else in the
+app works fine without it.
+
+This deliberately uses only **Firestore** (Firebase's database), not
+**Firebase Storage**. Google now requires the paid, pay-as-you-go "Blaze"
+plan just to turn Storage on, even though ordinary usage stays within its
+free quota — it's not something this app needs, so it's skipped entirely.
+Photos are shrunk and compressed right on your phone and saved as text
+inside Firestore itself, which stays on the truly free "Spark" plan, no
+credit card ever required. A video clip doesn't fit in a database document
+even compressed, though, so video works differently: the **🎥 Video Link**
+button doesn't upload anything — it saves a link to a video you've already
+put on Google Drive (shared as "Anyone with the link"), which is just a
+short piece of text and costs nothing either.
 
 ### 7a. Create the Firebase project
 
@@ -234,19 +260,23 @@ works fine without it.
    and click **Create a project** (or **Add project**). Give it any name
    (e.g. "roadtrip"). You can decline Google Analytics when asked — not
    needed here.
-2. Once it's created, on the project overview page click the **`</>`** (web)
-   icon to register a web app. Give it a nickname (e.g. "navigator") and
-   click **Register app**. You do *not* need Firebase Hosting — you're
-   already using GitHub Pages/Netlify for that.
+2. Once it's created, on the project overview page click **+ Add app**,
+   then pick the **`</>`** (Web) icon from the platform choices that appear.
+   Give it a nickname (e.g. "navigator") and click **Register app**. You do
+   *not* need Firebase Hosting — you're already using GitHub Pages/Netlify
+   for that.
 3. Firebase shows a code block containing a `firebaseConfig = { ... }`
    object. Open **`firebase-config.js`** from this download in a text
    editor, and copy your actual `apiKey`, `authDomain`, `projectId`,
    `storageBucket`, `messagingSenderId`, and `appId` values in, replacing
-   the `"YOUR_..."` placeholders. Save the file.
+   the `"YOUR_..."` placeholders. (Yes, copy `storageBucket` too even though
+   Storage itself won't be turned on — it's just part of the standard config
+   block and harmless to leave in.) Save the file.
 
-### 7b. Turn on the three Firebase features this uses
+### 7b. Turn on the two Firebase features this uses
 
-All in the Firebase console's left sidebar, under **Build**:
+Both in the Firebase console's left sidebar, under **Build** — and both
+free, no billing/Blaze plan needed:
 
 1. **Authentication** → **Get started** → under "Sign-in method," choose
    **Anonymous** → toggle **Enable** → **Save**. (This lets the app quietly
@@ -280,27 +310,9 @@ All in the Firebase console's left sidebar, under **Build**:
    }
    ```
 
-3. **Storage** → **Get started** → **Start in production mode** → same
-   location as Firestore → **Done**. Go to its **Rules** tab, replace the
-   contents with the block below, and **Publish**:
-
-   ```
-   rules_version = '2';
-   service firebase.storage {
-     match /b/{bucket}/o {
-       match /trip-media/{pin}/{ownerUid}/{fileName} {
-         allow read: if request.auth != null;
-         allow write: if request.auth != null && request.auth.uid == ownerUid
-                      && request.resource.size < 50 * 1024 * 1024
-                      && request.resource.contentType.matches('image/.*|video/.*');
-       }
-     }
-   }
-   ```
-
-These rules mean: only your own phone (recognized by the private key created
-the first time you use this feature) can ever start a trip, update its
-location, or add photos/videos/comments to it; anyone signed in (which
+This rule means: only your own phone (recognized by a private key Firebase
+generates the first time you use this feature) can ever start a trip,
+update its location, or add photos/comments to it; anyone signed in (which
 happens automatically and invisibly, including for viewers) can read a trip
 they know the passcode for; nobody can overwrite or delete anything but you.
 
@@ -310,12 +322,12 @@ Upload the edited `firebase-config.js` to your GitHub repo alongside
 `index.html`, `app.js`, and `style.css` (same folder). Reload the app — the
 **📡 Share & Trip Log** panel on the dashboard should now offer **Start
 Sharing This Leg** instead of "Not set up yet." That's it; no further setup
-is needed for the people you share the passcode with.
+is needed for the people you share the passcode with, and no credit card is
+needed anywhere in this flow.
 
-**Free tier note:** Firebase's free "Spark" plan (no credit card required)
-includes far more Firestore reads/writes and Storage than a two-week trip
-with a handful of family watching will use. If you ever see a Firebase
-billing prompt, you've almost certainly hit an unrelated project setting,
-not actual usage — the free limits reset daily and are generous (50K
-reads + 20K writes/day, 1GB stored data, 5GB file storage, 10GB/month
-download).
+**Free tier note:** Firebase's free "Spark" plan includes far more Firestore
+reads/writes than a two-week trip with a handful of family watching will
+use (50K reads + 20K writes/day, 1GB of stored data) — no billing account
+is attached to your project at all, so there's nothing to be charged for.
+Each shared photo does count against that 1GB (compressed to roughly
+100–700KB each), which is still room for hundreds of photos across the trip.
