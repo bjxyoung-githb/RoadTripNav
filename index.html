@@ -38,6 +38,20 @@
     <label>Rest break reminder (minutes of continuous driving, 0 = off)</label>
     <input id="breakInput" type="number" min="0" placeholder="120">
 
+    <label>Location source</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="locSource" id="locSourceDevice" value="device"> This device's own GPS (default, use on a phone)</label>
+      <label class="radio-option"><input type="radio" name="locSource" id="locSourceRelay" value="relay"> Phone via local relay (for a PC with no GPS)</label>
+    </div>
+    <div id="relayUrlRow" class="hidden">
+      <input id="relayUrlInput" type="text" placeholder="https://192.168.1.23:8443">
+      <div class="hint">
+        Requires the small relay app from the <code>pc-relay</code> folder running on your
+        phone's own network — see its README. Open this URL directly in this same browser
+        once first (to accept its security warning) before saving it here.
+      </div>
+    </div>
+
     <div class="modal-actions">
       <button id="saveSettingsBtn" class="primary-btn">Save</button>
       <button id="closeSettingsBtn" class="ghost-btn">Close</button>
@@ -81,6 +95,31 @@
     <div id="legsPanel">
       <h3>Saved legs</h3>
       <div id="legsList" class="legs-list"></div>
+    </div>
+
+    <button id="watchTripLink" class="ghost-btn" style="width:100%;margin-top:18px;">👀 Watch someone else's shared trip</button>
+  </div>
+</div>
+
+<!-- WATCH (VIEWER) SCREEN -->
+<div id="watchScreen" class="setup-screen hidden">
+  <div class="setup-card">
+    <h1>Watch a trip</h1>
+    <p class="muted">Enter the passcode the traveler shared with you to see their live location, photos, videos, and comments.</p>
+
+    <div id="watchPinEntry">
+      <label>Trip passcode</label>
+      <input id="watchPinInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
+      <button id="watchGoBtn" class="primary-btn">Watch</button>
+      <div id="watchError" class="error-text"></div>
+    </div>
+
+    <div id="watchLive" class="hidden">
+      <div id="watchStatus" class="watch-status muted">Connecting…</div>
+      <div id="watchWeather" class="watch-weather muted"></div>
+      <div id="watchMap" class="watch-map"></div>
+      <div id="watchEvents" class="watch-events"></div>
+      <button id="watchBackBtn" class="ghost-btn" style="width:100%;margin-top:14px;">← Back</button>
     </div>
   </div>
 </div>
@@ -153,12 +192,23 @@
       <div id="stepsPanel" class="panel-body steps-list"></div>
     </details>
 
+    <details>
+      <summary>📡 Share &amp; Trip Log</summary>
+      <div id="sharePanel" class="panel-body">Loading…</div>
+      <input id="mediaFileInput" type="file" accept="image/*,video/*" capture="environment" class="hidden">
+    </details>
+
   </div>
 </div>
 
 <div id="toast" class="toast hidden"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-storage-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
