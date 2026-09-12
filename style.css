@@ -81,6 +81,13 @@ input:disabled { opacity: .6; }
 }
 .result-item:hover, .result-item:active { background: #17233d; }
 .result-item.selected { border-color: var(--accent); background: #17233d; }
+.result-item .badge { margin-left: 4px; vertical-align: middle; }
+
+.fine-tune { margin-top: 10px; }
+.fine-tune-map {
+  height: 220px; width: 100%; border-radius: 10px; margin-top: 6px;
+  border: 1px solid var(--panel-border); overflow: hidden;
+}
 
 #legsPanel { margin-top: 24px; border-top: 1px solid var(--panel-border); padding-top: 16px; }
 #legsPanel h3 { margin: 0 0 8px; font-size: 15px; }
