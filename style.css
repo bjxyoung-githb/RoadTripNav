@@ -102,6 +102,20 @@ input:disabled { opacity: .6; }
 .dashboard { display: flex; flex-direction: column; min-height: 100vh; }
 #map { height: 42vh; min-height: 220px; width: 100%; }
 
+/* Full-screen map mode: hide everything below the map and let it fill the
+   rest of the screen; the "Exit Full Map" control (top-left, on the map
+   itself) toggles back to the normal split view. */
+.dashboard.map-fullscreen #map {
+  height: calc(100vh - 54px);
+  height: calc(100dvh - 54px);
+  min-height: 0;
+}
+.dashboard.map-fullscreen .turn-banner,
+.dashboard.map-fullscreen .stats-row,
+.dashboard.map-fullscreen .accordion {
+  display: none;
+}
+
 .turn-banner {
   background: var(--accent); color: white; padding: 14px 16px;
 }
