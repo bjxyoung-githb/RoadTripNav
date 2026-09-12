@@ -109,7 +109,7 @@ const state = {
   },
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
-  fb: null, // {app, auth, db, storage, uid} once Firebase is configured and signed in
+  fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, events: [], lastPushAt: 0, lastPushLoc: null },
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null },
 };
@@ -1078,10 +1078,22 @@ function drawRoute() {
 }
 
 /* ============================== FIREBASE / TRIP SHARING ============================== */
-// Optional feature: lets other people watch your live position, photos/videos,
-// and comments during a leg by entering a passcode. Requires a free Firebase
-// project — see firebase-config.js and README.md section 7. Nothing here
-// runs, and no network calls are made, until that config is filled in.
+// Optional feature: lets other people watch your live position, photos,
+// videos, and comments during a leg by entering a passcode. Requires a free
+// Firebase project — see firebase-config.js and README.md section 7.
+// Nothing here runs, and no network calls are made, until that config is
+// filled in.
+//
+// Deliberately Firestore-only, no Firebase Storage: Google now requires the
+// paid Blaze plan just to turn Storage on (even though usage within the free
+// quota costs nothing), while Firestore itself stays free (Spark plan, no
+// card needed). So photos are compressed client-side and stored as base64
+// text directly in a Firestore document instead of as an uploaded file —
+// that caps what fits (Firestore documents max out at 1MB), comfortably
+// enough for a compressed photo but not a video. Video is instead handled
+// as a link: record it normally, upload to Google Drive (or similar) with
+// "anyone with the link" sharing, and paste that link in — only the tiny
+// URL string is stored in Firestore, so this stays free too.
 
 function firebaseConfigured() {
   const c = window.FIREBASE_CONFIG;
@@ -1098,9 +1110,8 @@ function initFirebase() {
       const app = (firebase.apps && firebase.apps.length) ? firebase.app() : firebase.initializeApp(window.FIREBASE_CONFIG);
       const auth = firebase.auth(app);
       const db = firebase.firestore(app);
-      const storage = firebase.storage(app);
       auth.onAuthStateChanged((user) => {
-        if (user) { state.fb = { app, auth, db, storage, uid: user.uid }; resolve(state.fb); }
+        if (user) { state.fb = { app, auth, db, uid: user.uid }; resolve(state.fb); }
       });
       auth.signInAnonymously().catch((e) => reject(new Error('Firebase sign-in failed: ' + e.message)));
     } catch (e) { reject(e); }
@@ -1216,27 +1227,100 @@ function subscribeOwnEvents(pin) {
     }, (e) => toast('Trip log sync error: ' + e.message, 5000));
 }
 
-async function addPhotoOrVideo(file) {
-  const sh = state.share;
-  if (!sh.active) { toast('Start sharing first to attach photos/videos to your trip.', 5000); return; }
-  if (!state.loc) { toast('Waiting for GPS before tagging a location.', 4000); return; }
-  const isVideo = file.type.startsWith('video/');
-  toast('Uploading ' + (isVideo ? 'video' : 'photo') + '…', 10000);
+// Loads an image file into an <img> via a blob URL so it can be drawn to a
+// canvas for resizing/compression.
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not read that image file.'));
+    img.src = url;
+  });
+}
+
+// Shrinks/re-compresses the photo until its base64 text comfortably fits in
+// a single Firestore document (1MB hard limit) alongside its other fields —
+// this is what lets photos skip Firebase Storage (and its billing
+// requirement) entirely. Most phone photos need one or two passes.
+async function compressImageForFirestore(file) {
+  const img = await loadImageFromFile(file);
+  const budgetChars = 700000; // ~700KB of base64 text, safely under the 1MB/doc cap
+  let maxDim = 1600;
+  let quality = 0.7;
   try {
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const path = `trip-media/${sh.pin}/${state.fb.uid}/${Date.now()}_${safeName}`;
-    const snap = await state.fb.storage.ref(path).put(file);
-    const url = await snap.ref.getDownloadURL();
+    for (let attempt = 0; attempt < 7; attempt++) {
+      const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      const base64 = dataUrl.split(',')[1];
+      const atFloor = maxDim <= 480 && quality <= 0.35;
+      if (base64.length <= budgetChars || atFloor) {
+        return { base64, mediaType: 'image/jpeg' };
+      }
+      quality = Math.max(0.35, quality - 0.12);
+      maxDim = Math.round(maxDim * 0.8);
+    }
+    throw new Error('Photo is too large to fit even after compression.');
+  } finally {
+    URL.revokeObjectURL(img.src);
+  }
+}
+
+async function addPhoto(file) {
+  const sh = state.share;
+  if (!sh.active) { toast('Start sharing first to attach photos to your trip.', 5000); return; }
+  if (!state.loc) { toast('Waiting for GPS before tagging a location.', 4000); return; }
+  if (!file.type.startsWith('image/')) { toast("Please choose a photo — video isn't supported (it needs paid Firebase Storage; photos don't).", 7000); return; }
+  toast('Adding photo…', 8000);
+  try {
+    const { base64, mediaType } = await compressImageForFirestore(file);
     await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
-      type: isVideo ? 'video' : 'photo',
-      mediaUrl: url,
-      mediaType: file.type,
+      type: 'photo',
+      mediaData: base64,
+      mediaType,
       lat: state.loc.lat, lon: state.loc.lon,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
-    toast((isVideo ? 'Video' : 'Photo') + ' added to your trip.', 4000);
+    toast('Photo added to your trip.', 4000);
   } catch (e) {
-    toast('Upload failed: ' + e.message, 6000);
+    toast("Couldn't add photo: " + e.message, 6000);
+  }
+}
+
+// Pulls the file ID out of a Google Drive share link so a thumbnail can be
+// shown (Drive serves public thumbnails for files shared "Anyone with the
+// link"). Returns null for anything that doesn't look like a Drive link —
+// the raw link is still saved and openable either way.
+function extractDriveFileId(url) {
+  let m = url.match(/\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  m = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (m) return m[1];
+  return null;
+}
+
+async function addVideoLink(url) {
+  const sh = state.share;
+  if (!sh.active) { toast('Start sharing first to add a video link to your trip.', 5000); return; }
+  const trimmed = (url || '').trim();
+  if (!/^https?:\/\//i.test(trimmed)) { toast('That doesn\'t look like a web link — paste the "Anyone with the link" URL from Google Drive.', 6000); return; }
+  const loc = state.loc || (state.route ? { lat: state.route.coords[0][1], lon: state.route.coords[0][0] } : null);
+  try {
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: 'video',
+      url: trimmed,
+      driveFileId: extractDriveFileId(trimmed),
+      lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    toast('Video link added to your trip.', 4000);
+  } catch (e) {
+    toast("Couldn't add video link: " + e.message, 6000);
   }
 }
 
@@ -1267,12 +1351,17 @@ function renderEventItem(ev) {
       <div class="item-main">${escapeHtml(ev.text || '')}</div>
       <div class="item-sub">${when}</div></div></div>`;
   }
-  const isVideo = ev.type === 'video';
-  const media = isVideo
-    ? `<video src="${ev.mediaUrl}" class="event-thumb" controls playsinline></video>`
-    : `<img src="${ev.mediaUrl}" class="event-thumb" alt="Trip photo" loading="lazy">`;
-  return `<div class="event-item">${media}<div>
-    <div class="item-main">${isVideo ? '🎥 Video' : '📷 Photo'}</div>
+  if (ev.type === 'video') {
+    const thumb = ev.driveFileId
+      ? `<img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" class="event-thumb" alt="Video thumbnail" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'event-icon',textContent:'🎥'}))">`
+      : `<div class="event-icon">🎥</div>`;
+    return `<a class="event-item" href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">${thumb}<div>
+      <div class="item-main">🎥 Watch video ↗</div>
+      <div class="item-sub">${when}</div></div></a>`;
+  }
+  const src = `data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}`;
+  return `<div class="event-item"><img src="${src}" class="event-thumb" alt="Trip photo" loading="lazy"><div>
+    <div class="item-main">📷 Photo</div>
     <div class="item-sub">${when}</div></div></div>`;
 }
 
@@ -1283,11 +1372,17 @@ function makeEventMarker(ev) {
     html: `<div class="event-marker-icon">${iconEmoji}</div>`,
     iconSize: [26, 26], iconAnchor: [13, 24],
   });
-  const popupHtml = ev.type === 'comment'
-    ? `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}`
-    : ev.type === 'video'
-      ? `<b>🎥 Video</b><br><video src="${ev.mediaUrl}" controls playsinline style="max-width:220px;max-height:220px;"></video>`
-      : `<b>📷 Photo</b><br><img src="${ev.mediaUrl}" style="max-width:220px;max-height:220px;">`;
+  let popupHtml;
+  if (ev.type === 'comment') {
+    popupHtml = `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}`;
+  } else if (ev.type === 'video') {
+    const thumb = ev.driveFileId
+      ? `<br><img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" style="max-width:200px;max-height:200px;" onerror="this.remove()">`
+      : '';
+    popupHtml = `<b>🎥 Video</b>${thumb}<br><a href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">▶ Watch on Google Drive</a>`;
+  } else {
+    popupHtml = `<b>📷 Photo</b><br><img src="data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}" style="max-width:220px;max-height:220px;">`;
+  }
   return L.marker([ev.lat, ev.lon], { icon }).bindPopup(popupHtml);
 }
 
@@ -1304,13 +1399,13 @@ function renderSharePanel() {
   const panel = document.getElementById('sharePanel');
   if (!panel) return;
   if (!firebaseConfigured()) {
-    panel.innerHTML = '<span class="muted">Not set up yet — see README.md section 7 to enable live sharing, photos/videos, and comments with family.</span>';
+    panel.innerHTML = '<span class="muted">Not set up yet — see README.md section 7 to enable live sharing, photos, videos, and comments with family.</span>';
     return;
   }
   const sh = state.share;
   if (!sh.active) {
     panel.innerHTML = `
-      <div class="hint">Share your live position, photos/videos, and comments with family for this leg — they watch by entering a passcode, no app or account needed on their end.</div>
+      <div class="hint">Share your live position, photos, videos, and comments with family for this leg — they watch by entering a passcode, no app or account needed on their end.</div>
       <button id="startSharingBtn" class="primary-btn" style="margin-top:10px;">Start Sharing This Leg</button>`;
     document.getElementById('startSharingBtn').onclick = startSharing;
     return;
@@ -1325,10 +1420,16 @@ function renderSharePanel() {
       <div class="hint">Give this 6-digit code to family — they open this same web address, tap "Watch someone else's shared trip," and enter it.</div>
     </div>
     <div class="share-actions">
-      <button id="addPhotoBtn" class="ghost-btn small">📷 Photo/Video</button>
+      <button id="addPhotoBtn" class="ghost-btn small">📷 Add Photo</button>
+      <button id="addVideoBtn" class="ghost-btn small">🎥 Video Link</button>
       <button id="addCommentBtn" class="ghost-btn small">💬 Comment</button>
       <button id="stopSharingBtn" class="ghost-btn small">Stop Sharing</button>
     </div>
+    <div id="videoLinkInputRow" class="comment-input-row hidden">
+      <input id="videoLinkTextInput" type="url" placeholder="Paste Google Drive share link…" maxlength="500">
+      <button id="videoLinkSendBtn" class="ghost-btn small">Add</button>
+    </div>
+    <div id="videoLinkHint" class="hint hidden">Record with your phone's normal camera, upload it to Google Drive, tap Share → set to "Anyone with the link," then paste that link here — no upload happens through this app.</div>
     <div id="commentInputRow" class="comment-input-row hidden">
       <input id="commentTextInput" type="text" placeholder="Say something about where you are…" maxlength="500">
       <button id="commentSendBtn" class="ghost-btn small">Send</button>
@@ -1336,8 +1437,22 @@ function renderSharePanel() {
     <div class="event-list">${eventsHtml}</div>`;
 
   document.getElementById('addPhotoBtn').onclick = () => document.getElementById('mediaFileInput').click();
+  document.getElementById('addVideoBtn').onclick = () => {
+    document.getElementById('videoLinkInputRow').classList.toggle('hidden');
+    document.getElementById('videoLinkHint').classList.toggle('hidden');
+  };
   document.getElementById('addCommentBtn').onclick = () => document.getElementById('commentInputRow').classList.toggle('hidden');
   document.getElementById('stopSharingBtn').onclick = stopSharing;
+  document.getElementById('videoLinkSendBtn').onclick = () => {
+    const input = document.getElementById('videoLinkTextInput');
+    addVideoLink(input.value);
+    input.value = '';
+    document.getElementById('videoLinkInputRow').classList.add('hidden');
+    document.getElementById('videoLinkHint').classList.add('hidden');
+  };
+  document.getElementById('videoLinkTextInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('videoLinkSendBtn').click();
+  });
   document.getElementById('commentSendBtn').onclick = () => {
     const input = document.getElementById('commentTextInput');
     addComment(input.value);
@@ -1352,7 +1467,7 @@ function renderSharePanel() {
 function wireSharing() {
   document.getElementById('mediaFileInput').addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
-    if (file) addPhotoOrVideo(file);
+    if (file) addPhoto(file);
     e.target.value = '';
   });
   renderSharePanel();
@@ -1361,7 +1476,7 @@ function wireSharing() {
 /* ============================== WATCH (VIEWER) MODE ============================== */
 // The read-only counterpart to sharing above: anyone with the passcode opens
 // this same page, enters it, and sees the traveler's route, live position,
-// and photo/video/comment pins update in real time — no account needed.
+// and photo/comment pins update in real time — no account needed.
 
 function wireWatchScreen() {
   const link = document.getElementById('watchTripLink');
