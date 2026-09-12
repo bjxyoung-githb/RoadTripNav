@@ -485,9 +485,21 @@ out 60;`;
           <div class="item-main">⛰ ${el.name}</div>
           <div class="item-sub">${el.eleFt.toLocaleString()} ft elev · ${compass(el.brg)} of you</div>
         </div><div class="item-right">${fmtMiles(el.dist)}</div></div>`).join('');
-      items.forEach((el) => {
-        const m = L.circleMarker([el.lat, el.lon], { radius: 5, color: '#f5a623', fillOpacity: .8 })
-          .bindPopup(`${el.name} — ${el.eleFt.toLocaleString()} ft (${fmtMiles(el.dist)})`).addTo(state.map);
+      // Only pin the closest few on the map itself (with always-on labels)
+      // so it stays readable at a glance; the panel list above still shows
+      // all 10 for reference even when off-map.
+      items.slice(0, 6).forEach((el) => {
+        const icon = L.divIcon({
+          className: 'peak-marker',
+          html: '<div class="peak-marker-icon">⛰️</div>',
+          iconSize: [26, 26],
+          iconAnchor: [13, 22],
+          tooltipAnchor: [0, -18],
+        });
+        const m = L.marker([el.lat, el.lon], { icon, keyboard: false })
+          .bindTooltip(`${el.name} · ${el.eleFt.toLocaleString()} ft`, { permanent: true, direction: 'top', className: 'peak-tooltip' })
+          .bindPopup(`<b>${el.name}</b><br>${el.eleFt.toLocaleString()} ft elevation<br>${fmtMiles(el.dist)} ${compass(el.brg)} of you`)
+          .addTo(state.map);
         state.peakMarkers.push(m);
       });
     } else {
