@@ -920,10 +920,44 @@ function drawRoute() {
   if (state.routeLine) state.map.removeLayer(state.routeLine);
   const latlngs = state.route.coords.map((c) => [c[1], c[0]]);
   state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(state.map);
+
+  // The route geometry's last point is wherever the road network snapped
+  // to (the nearest point ORS can actually drive to) — this can land
+  // noticeably away from the pin you picked/dragged if that spot isn't on
+  // a mapped, routable road (common for internal complex/HOA roads that
+  // OpenStreetMap doesn't have marked as driveable). Show both points so
+  // that gap is visible instead of silently ending up somewhere unexpected.
   if (state.destMarker) state.map.removeLayer(state.destMarker);
+  if (state.pinMarker) state.map.removeLayer(state.pinMarker);
+
   const destC = state.route.coords[state.route.coords.length - 1];
-  state.destMarker = L.marker([destC[1], destC[0]]).addTo(state.map);
-  state.map.fitBounds(state.routeLine.getBounds(), { padding: [30, 30] });
+  state.destMarker = L.marker([destC[1], destC[0]])
+    .bindPopup('Route ends here (nearest drivable road)')
+    .addTo(state.map);
+
+  const pin = state.route.destForReroute;
+  const gapMiles = pin ? haversineMiles(pin.lat, pin.lon, destC[1], destC[0]) : 0;
+  if (pin && gapMiles > 0.03) {
+    const icon = L.divIcon({
+      className: 'pin-marker',
+      html: '<div class="pin-marker-icon">🏠</div>',
+      iconSize: [26, 26],
+      iconAnchor: [13, 24],
+    });
+    state.pinMarker = L.marker([pin.lat, pin.lon], { icon })
+      .bindPopup(`Your destination pin<br>${fmtMiles(gapMiles)} from the nearest drivable road`)
+      .addTo(state.map);
+    if (gapMiles > 0.1) {
+      toast(`⚠️ The road network's closest drivable point is about ${fmtMiles(gapMiles)} from your exact pin (🏠). You may need to finish on foot or double check the spot.`, 10000);
+    }
+  } else {
+    state.pinMarker = null;
+  }
+
+  const bounds = state.pinMarker
+    ? state.routeLine.getBounds().extend(state.pinMarker.getLatLng())
+    : state.routeLine.getBounds();
+  state.map.fitBounds(bounds, { padding: [30, 30] });
 }
 
 /* ============================== SETUP SCREEN LOGIC ============================== */
