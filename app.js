@@ -75,7 +75,11 @@ const LS_SETTINGS = 'rtnav_settings_v1';
 const LS_TRIP = 'rtnav_trip_v1';
 
 function loadSettings() {
-  const defaults = { orsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false };
+  const defaults = {
+    orsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false,
+    locationSource: 'device', // 'device' (this device's own GPS, default) | 'relay' (phone via local relay, for PCs without GPS)
+    relayUrl: '',
+  };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}')); }
   catch (e) { return defaults; }
 }
@@ -104,6 +108,10 @@ const state = {
     peaksFetchedAtMiles: null, peaksFetchedAt: 0,
   },
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
+  eventMarkers: [],
+  fb: null, // {app, auth, db, storage, uid} once Firebase is configured and signed in
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, events: [], lastPushAt: 0, lastPushLoc: null },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -240,8 +248,34 @@ function getStartCoords() {
 
 let lastGeoUpdateAt = 0;
 let geoStaleCheckTimer = null;
+let relayPollTimer = null;
 
-function startGeolocation() {
+// Dispatches to the configured location source. Phone-own-GPS is the
+// default and primary path for everyone; the relay option exists only for
+// the case of running this on a device with no real GPS (e.g. a Windows
+// PC), fed by a phone running the small companion relay server.
+function startLocationSource() {
+  stopLocationSource();
+  if (state.settings.locationSource === 'relay' && state.settings.relayUrl) {
+    startRelayPolling();
+  } else {
+    startGeolocationDevice();
+  }
+}
+
+function stopLocationSource() {
+  if (state.geoWatchId != null && 'geolocation' in navigator) {
+    navigator.geolocation.clearWatch(state.geoWatchId);
+    state.geoWatchId = null;
+  }
+  clearInterval(geoStaleCheckTimer);
+  clearInterval(relayPollTimer);
+  geoStaleCheckTimer = null;
+  relayPollTimer = null;
+  lastGeoUpdateAt = 0;
+}
+
+function startGeolocationDevice() {
   const connEl = document.getElementById('connStatus');
   if (!('geolocation' in navigator)) {
     connEl.className = 'conn-status conn-bad';
@@ -285,6 +319,57 @@ function startGeolocation() {
     if (ageSec > 15) {
       connEl.className = 'conn-status conn-bad';
       connEl.textContent = 'GPS: stale (' + Math.round(ageSec) + 's since last fix)';
+    }
+  }, 5000);
+}
+
+// Polls a small relay server (run on a phone-reachable local network) for
+// the latest location a phone has posted to it. See the pc-relay/ folder
+// for the companion server + phone beacon page this talks to.
+function startRelayPolling() {
+  const connEl = document.getElementById('connStatus');
+  const base = state.settings.relayUrl.replace(/\/+$/, '');
+  connEl.className = 'conn-status conn-unknown';
+  connEl.textContent = 'GPS: connecting to phone relay…';
+
+  const poll = async () => {
+    try {
+      const res = await fetch(base + '/api/location', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      if (!json.latest) {
+        connEl.className = 'conn-status conn-unknown';
+        connEl.textContent = 'GPS: relay reachable, waiting for your phone…';
+        return;
+      }
+      const l = json.latest;
+      state.loc = {
+        lat: l.lat, lon: l.lon, accuracy: l.accuracy,
+        heading: l.heading, speed: l.speed,
+        updatedAt: l.receivedAt || Date.now(),
+      };
+      lastGeoUpdateAt = Date.now();
+      connEl.className = 'conn-status conn-ok';
+      connEl.textContent = 'GPS: via phone relay (±' + Math.round((l.accuracy || 0) * 3.28084) + ' ft)';
+      updateSetupStartLabel();
+      onLocationUpdate();
+    } catch (e) {
+      connEl.className = 'conn-status conn-bad';
+      connEl.textContent = 'GPS: can\'t reach relay — check the URL, that both devices are on the same network, and that you\'ve opened the relay URL directly in this browser once';
+    }
+  };
+
+  poll();
+  clearInterval(relayPollTimer);
+  relayPollTimer = setInterval(poll, 3000);
+
+  clearInterval(geoStaleCheckTimer);
+  geoStaleCheckTimer = setInterval(() => {
+    if (!lastGeoUpdateAt) return;
+    const ageSec = (Date.now() - lastGeoUpdateAt) / 1000;
+    if (ageSec > 15) {
+      connEl.className = 'conn-status conn-bad';
+      connEl.textContent = 'GPS: stale (' + Math.round(ageSec) + 's since last fix from relay)';
     }
   }, 5000);
 }
@@ -792,6 +877,7 @@ async function onLocationUpdate() {
     refreshDaylight();
   }
   updateDriveTimer();
+  maybePushShareLocation();
 }
 
 function renderSteps(currentIdx) {
@@ -991,6 +1077,498 @@ function drawRoute() {
   state.map.fitBounds(bounds, { padding: [30, 30] });
 }
 
+/* ============================== FIREBASE / TRIP SHARING ============================== */
+// Optional feature: lets other people watch your live position, photos/videos,
+// and comments during a leg by entering a passcode. Requires a free Firebase
+// project — see firebase-config.js and README.md section 7. Nothing here
+// runs, and no network calls are made, until that config is filled in.
+
+function firebaseConfigured() {
+  const c = window.FIREBASE_CONFIG;
+  return !!(c && c.apiKey && !String(c.apiKey).startsWith('YOUR_'));
+}
+
+let fbInitPromise = null;
+function initFirebase() {
+  if (fbInitPromise) return fbInitPromise;
+  fbInitPromise = new Promise((resolve, reject) => {
+    if (!firebaseConfigured()) return reject(new Error("Trip sharing isn't set up yet — see README.md section 7."));
+    if (typeof firebase === 'undefined') return reject(new Error('Firebase library failed to load — check your connection and reload.'));
+    try {
+      const app = (firebase.apps && firebase.apps.length) ? firebase.app() : firebase.initializeApp(window.FIREBASE_CONFIG);
+      const auth = firebase.auth(app);
+      const db = firebase.firestore(app);
+      const storage = firebase.storage(app);
+      auth.onAuthStateChanged((user) => {
+        if (user) { state.fb = { app, auth, db, storage, uid: user.uid }; resolve(state.fb); }
+      });
+      auth.signInAnonymously().catch((e) => reject(new Error('Firebase sign-in failed: ' + e.message)));
+    } catch (e) { reject(e); }
+  });
+  return fbInitPromise;
+}
+
+function randomPin() { return String(Math.floor(100000 + Math.random() * 900000)); }
+
+async function generateUniquePin(db, uid) {
+  for (let i = 0; i < 6; i++) {
+    const pin = randomPin();
+    const snap = await db.collection('trips').doc(pin).get();
+    if (!snap.exists) return pin;
+    const data = snap.data();
+    if (data.ownerUid === uid || data.active === false) return pin; // safe to reuse
+  }
+  return randomPin(); // extremely unlikely to still collide
+}
+
+// Firestore documents are capped at 1MB; a multi-day route can have
+// thousands of coordinate points, so thin it down to a shape that's still
+// plenty smooth on a viewer's map.
+function sampleRouteForShare(coords, maxPoints) {
+  maxPoints = maxPoints || 300;
+  if (coords.length <= maxPoints) return coords.map((c) => [c[1], c[0]]);
+  const out = [];
+  const step = (coords.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    const idx = Math.round(i * step);
+    out.push([coords[idx][1], coords[idx][0]]);
+  }
+  return out;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function startSharing() {
+  const panel = document.getElementById('sharePanel');
+  if (!state.route) { toast('Calculate a route first.', 4000); return; }
+  panel.innerHTML = '<span class="muted">Connecting…</span>';
+  try {
+    const { db, uid } = await initFirebase();
+    const pin = await generateUniquePin(db, uid);
+    const routeCoords = sampleRouteForShare(state.route.coords, 300);
+    await db.collection('trips').doc(pin).set({
+      ownerUid: uid,
+      destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
+      startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      active: true,
+      routeCoords,
+      totalMiles: state.route.totalDist,
+      lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, updatedAt: Date.now() } : null,
+    });
+
+    state.share.active = true;
+    state.share.pin = pin;
+    state.share.ownerUid = uid;
+    state.share.lastPushAt = Date.now();
+    state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+    subscribeOwnEvents(pin);
+    renderSharePanel();
+    toast('Sharing started — passcode ' + pin, 6000);
+  } catch (e) {
+    panel.innerHTML = `<span class="muted">Couldn't start sharing: ${e.message}</span>`;
+  }
+}
+
+async function stopSharing() {
+  const sh = state.share;
+  const pin = sh.pin;
+  if (sh.unsubEvents) { sh.unsubEvents(); sh.unsubEvents = null; }
+  if (pin && state.fb) {
+    try {
+      await state.fb.db.collection('trips').doc(pin).set(
+        { active: false, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    } catch (e) { /* best effort — stale doc will just show "sharing ended" to viewers */ }
+  }
+  clearMarkers(state.eventMarkers);
+  sh.active = false; sh.pin = null; sh.ownerUid = null; sh.events = [];
+  sh.lastPushAt = 0; sh.lastPushLoc = null;
+  renderSharePanel();
+  toast('Sharing stopped.', 3000);
+}
+
+function maybePushShareLocation() {
+  const sh = state.share;
+  if (!sh.active || !state.fb || !state.loc) return;
+  const now = Date.now();
+  const movedFar = !sh.lastPushLoc || haversineMiles(sh.lastPushLoc.lat, sh.lastPushLoc.lon, state.loc.lat, state.loc.lon) > 0.02;
+  if (now - sh.lastPushAt < 15000 && !movedFar) return;
+  sh.lastPushAt = now;
+  sh.lastPushLoc = { lat: state.loc.lat, lon: state.loc.lon };
+  state.fb.db.collection('trips').doc(sh.pin).set({
+    lastLocation: { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, updatedAt: now },
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  }, { merge: true }).catch(() => { /* best effort; next cycle retries */ });
+}
+
+function subscribeOwnEvents(pin) {
+  if (state.share.unsubEvents) state.share.unsubEvents();
+  state.share.unsubEvents = state.fb.db.collection('trips').doc(pin).collection('events')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot((snap) => {
+      const events = [];
+      snap.forEach((doc) => events.push({ id: doc.id, ...doc.data() }));
+      state.share.events = events;
+      renderSharePanel();
+      renderOwnEventMarkers(events);
+    }, (e) => toast('Trip log sync error: ' + e.message, 5000));
+}
+
+async function addPhotoOrVideo(file) {
+  const sh = state.share;
+  if (!sh.active) { toast('Start sharing first to attach photos/videos to your trip.', 5000); return; }
+  if (!state.loc) { toast('Waiting for GPS before tagging a location.', 4000); return; }
+  const isVideo = file.type.startsWith('video/');
+  toast('Uploading ' + (isVideo ? 'video' : 'photo') + '…', 10000);
+  try {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `trip-media/${sh.pin}/${state.fb.uid}/${Date.now()}_${safeName}`;
+    const snap = await state.fb.storage.ref(path).put(file);
+    const url = await snap.ref.getDownloadURL();
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: isVideo ? 'video' : 'photo',
+      mediaUrl: url,
+      mediaType: file.type,
+      lat: state.loc.lat, lon: state.loc.lon,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    toast((isVideo ? 'Video' : 'Photo') + ' added to your trip.', 4000);
+  } catch (e) {
+    toast('Upload failed: ' + e.message, 6000);
+  }
+}
+
+async function addComment(text) {
+  const sh = state.share;
+  if (!sh.active) { toast('Start sharing first to add comments to your trip.', 5000); return; }
+  if (!text || !text.trim()) return;
+  const loc = state.loc || (state.route ? { lat: state.route.coords[0][1], lon: state.route.coords[0][0] } : null);
+  try {
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: 'comment',
+      text: text.trim().slice(0, 500),
+      lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    toast('Comment added.', 3000);
+  } catch (e) {
+    toast("Couldn't add comment: " + e.message, 5000);
+  }
+}
+
+function renderEventItem(ev) {
+  const when = (ev.createdAt && ev.createdAt.toDate)
+    ? ev.createdAt.toDate().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : 'just now';
+  if (ev.type === 'comment') {
+    return `<div class="event-item"><div class="event-icon">💬</div><div>
+      <div class="item-main">${escapeHtml(ev.text || '')}</div>
+      <div class="item-sub">${when}</div></div></div>`;
+  }
+  const isVideo = ev.type === 'video';
+  const media = isVideo
+    ? `<video src="${ev.mediaUrl}" class="event-thumb" controls playsinline></video>`
+    : `<img src="${ev.mediaUrl}" class="event-thumb" alt="Trip photo" loading="lazy">`;
+  return `<div class="event-item">${media}<div>
+    <div class="item-main">${isVideo ? '🎥 Video' : '📷 Photo'}</div>
+    <div class="item-sub">${when}</div></div></div>`;
+}
+
+function makeEventMarker(ev) {
+  const iconEmoji = ev.type === 'comment' ? '💬' : ev.type === 'video' ? '🎥' : '📷';
+  const icon = L.divIcon({
+    className: 'event-marker',
+    html: `<div class="event-marker-icon">${iconEmoji}</div>`,
+    iconSize: [26, 26], iconAnchor: [13, 24],
+  });
+  const popupHtml = ev.type === 'comment'
+    ? `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}`
+    : ev.type === 'video'
+      ? `<b>🎥 Video</b><br><video src="${ev.mediaUrl}" controls playsinline style="max-width:220px;max-height:220px;"></video>`
+      : `<b>📷 Photo</b><br><img src="${ev.mediaUrl}" style="max-width:220px;max-height:220px;">`;
+  return L.marker([ev.lat, ev.lon], { icon }).bindPopup(popupHtml);
+}
+
+function renderOwnEventMarkers(events) {
+  if (!state.map) return;
+  clearMarkers(state.eventMarkers);
+  events.forEach((ev) => {
+    if (typeof ev.lat !== 'number' || typeof ev.lon !== 'number') return;
+    state.eventMarkers.push(makeEventMarker(ev).addTo(state.map));
+  });
+}
+
+function renderSharePanel() {
+  const panel = document.getElementById('sharePanel');
+  if (!panel) return;
+  if (!firebaseConfigured()) {
+    panel.innerHTML = '<span class="muted">Not set up yet — see README.md section 7 to enable live sharing, photos/videos, and comments with family.</span>';
+    return;
+  }
+  const sh = state.share;
+  if (!sh.active) {
+    panel.innerHTML = `
+      <div class="hint">Share your live position, photos/videos, and comments with family for this leg — they watch by entering a passcode, no app or account needed on their end.</div>
+      <button id="startSharingBtn" class="primary-btn" style="margin-top:10px;">Start Sharing This Leg</button>`;
+    document.getElementById('startSharingBtn').onclick = startSharing;
+    return;
+  }
+  const eventsHtml = sh.events.length
+    ? sh.events.map(renderEventItem).join('')
+    : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
+  panel.innerHTML = `
+    <div class="share-pin-box">
+      <div class="share-pin-lbl">Passcode to watch this trip</div>
+      <div class="share-pin-big">${sh.pin}</div>
+      <div class="hint">Give this 6-digit code to family — they open this same web address, tap "Watch someone else's shared trip," and enter it.</div>
+    </div>
+    <div class="share-actions">
+      <button id="addPhotoBtn" class="ghost-btn small">📷 Photo/Video</button>
+      <button id="addCommentBtn" class="ghost-btn small">💬 Comment</button>
+      <button id="stopSharingBtn" class="ghost-btn small">Stop Sharing</button>
+    </div>
+    <div id="commentInputRow" class="comment-input-row hidden">
+      <input id="commentTextInput" type="text" placeholder="Say something about where you are…" maxlength="500">
+      <button id="commentSendBtn" class="ghost-btn small">Send</button>
+    </div>
+    <div class="event-list">${eventsHtml}</div>`;
+
+  document.getElementById('addPhotoBtn').onclick = () => document.getElementById('mediaFileInput').click();
+  document.getElementById('addCommentBtn').onclick = () => document.getElementById('commentInputRow').classList.toggle('hidden');
+  document.getElementById('stopSharingBtn').onclick = stopSharing;
+  document.getElementById('commentSendBtn').onclick = () => {
+    const input = document.getElementById('commentTextInput');
+    addComment(input.value);
+    input.value = '';
+    document.getElementById('commentInputRow').classList.add('hidden');
+  };
+  document.getElementById('commentTextInput').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('commentSendBtn').click();
+  });
+}
+
+function wireSharing() {
+  document.getElementById('mediaFileInput').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (file) addPhotoOrVideo(file);
+    e.target.value = '';
+  });
+  renderSharePanel();
+}
+
+/* ============================== WATCH (VIEWER) MODE ============================== */
+// The read-only counterpart to sharing above: anyone with the passcode opens
+// this same page, enters it, and sees the traveler's route, live position,
+// and photo/video/comment pins update in real time — no account needed.
+
+function wireWatchScreen() {
+  const link = document.getElementById('watchTripLink');
+  const backBtn = document.getElementById('watchBackBtn');
+  const goBtn = document.getElementById('watchGoBtn');
+  const pinInput = document.getElementById('watchPinInput');
+
+  link.addEventListener('click', () => {
+    document.getElementById('setupScreen').classList.add('hidden');
+    document.getElementById('watchScreen').classList.remove('hidden');
+    document.getElementById('watchPinEntry').classList.remove('hidden');
+    document.getElementById('watchLive').classList.add('hidden');
+    document.getElementById('watchError').textContent = '';
+    pinInput.value = '';
+    pinInput.focus();
+  });
+
+  backBtn.addEventListener('click', () => {
+    stopWatching();
+    document.getElementById('watchScreen').classList.add('hidden');
+    document.getElementById('setupScreen').classList.remove('hidden');
+  });
+
+  goBtn.addEventListener('click', () => {
+    const pin = pinInput.value.trim();
+    if (!/^\d{4,8}$/.test(pin)) {
+      document.getElementById('watchError').textContent = 'Enter the passcode you were given (numbers only).';
+      return;
+    }
+    watchTrip(pin);
+  });
+  pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') goBtn.click(); });
+}
+
+async function watchTrip(pin) {
+  const errEl = document.getElementById('watchError');
+  errEl.textContent = '';
+  if (!firebaseConfigured()) {
+    errEl.textContent = "Trip sharing isn't set up in this app yet — ask the traveler to check README.md section 7.";
+    return;
+  }
+  try {
+    const { db } = await initFirebase();
+    const snap = await db.collection('trips').doc(pin).get();
+    if (!snap.exists) { errEl.textContent = 'No trip found with that passcode.'; return; }
+
+    stopWatching();
+    state.watch.pin = pin;
+    document.getElementById('watchPinEntry').classList.add('hidden');
+    document.getElementById('watchLive').classList.remove('hidden');
+    setTimeout(initWatchMap, 0);
+
+    state.watch.unsubTrip = db.collection('trips').doc(pin).onSnapshot((doc) => {
+      if (!doc.exists) { renderWatchStatus('This trip is no longer available.'); return; }
+      state.watch.trip = doc.data();
+      renderWatchTrip();
+    }, (e) => renderWatchStatus('Connection error: ' + e.message));
+
+    state.watch.unsubEvents = db.collection('trips').doc(pin).collection('events')
+      .orderBy('createdAt', 'desc')
+      .onSnapshot((qs) => {
+        const events = [];
+        qs.forEach((d) => events.push({ id: d.id, ...d.data() }));
+        state.watch.events = events;
+        renderWatchEvents(events);
+      });
+  } catch (e) {
+    errEl.textContent = "Couldn't connect: " + e.message;
+  }
+}
+
+function stopWatching() {
+  if (state.watch.unsubTrip) { state.watch.unsubTrip(); state.watch.unsubTrip = null; }
+  if (state.watch.unsubEvents) { state.watch.unsubEvents(); state.watch.unsubEvents = null; }
+  state.watch.pin = null;
+  state.watch.trip = null;
+  state.watch.events = [];
+  state.watch.eventMarkers = {};
+  state.watch.weatherFetchedAt = 0;
+  state.watch.weatherLoc = null;
+  if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
+  state.watch.routeLine = null;
+  state.watch.liveMarker = null;
+}
+
+// A plain up-arrow rotated to the reported heading reads as a direction-of-
+// travel indicator at a glance; when heading isn't available (GPS reports
+// none while stopped, on some devices), fall back to a plain car glyph.
+function liveMarkerIcon(heading) {
+  const hasHeading = typeof heading === 'number' && !isNaN(heading);
+  const glyph = hasHeading ? '⬆️' : '🚗';
+  const style = hasHeading ? ` style="transform:rotate(${heading}deg)"` : '';
+  return L.divIcon({
+    className: 'live-marker',
+    html: `<div class="live-marker-icon"${style}>${glyph}</div>`,
+    iconSize: [30, 30], iconAnchor: [15, 15],
+  });
+}
+
+function liveTooltipText(loc) {
+  const speedMph = (typeof loc.speed === 'number' && loc.speed >= 0) ? Math.round(loc.speed * MPS_TO_MPH) : null;
+  const dirTxt = (typeof loc.heading === 'number' && !isNaN(loc.heading)) ? compass(loc.heading) : null;
+  const parts = [];
+  if (speedMph != null) parts.push(speedMph + ' mph');
+  if (dirTxt) parts.push('heading ' + dirTxt);
+  return parts.length ? parts.join(' · ') : 'Stopped';
+}
+
+function renderWatchWeather(text) {
+  const el = document.getElementById('watchWeather');
+  if (el) el.textContent = text;
+}
+
+// Reuses the same NWS lookup the main app uses for "Weather Ahead" — free,
+// no key, US-only — but here it's just current conditions at the traveler's
+// live spot. Throttled the same way (time + distance) to avoid hammering
+// NWS every time a new location update arrives.
+async function maybeRefreshWatchWeather(loc) {
+  const w = state.watch;
+  const now = Date.now();
+  const movedFar = !w.weatherLoc || haversineMiles(w.weatherLoc.lat, w.weatherLoc.lon, loc.lat, loc.lon) > 5;
+  if (w.weatherFetchedAt && now - w.weatherFetchedAt < 10 * 60 * 1000 && !movedFar) return;
+  w.weatherFetchedAt = now;
+  w.weatherLoc = { lat: loc.lat, lon: loc.lon };
+  try {
+    const periods = await nwsForecastAt(loc.lat, loc.lon);
+    const cur = periods[0];
+    renderWatchWeather(`🌦 ${cur.temperature}°${cur.temperatureUnit} — ${cur.shortForecast} · wind ${cur.windSpeed}`);
+  } catch (e) {
+    renderWatchWeather('Weather unavailable at this location (US only).');
+  }
+}
+
+function initWatchMap() {
+  if (state.watch.map) return;
+  const map = L.map('watchMap', { zoomControl: true }).setView([37.5, -96], 4);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+  state.watch.map = map;
+  if (state.watch.trip) renderWatchTrip();
+  if (state.watch.events) renderWatchEvents(state.watch.events);
+}
+
+function renderWatchStatus(msg) {
+  const el = document.getElementById('watchStatus');
+  if (el) el.textContent = msg;
+}
+
+function renderWatchTrip() {
+  const trip = state.watch.trip;
+  if (!trip) return;
+  const map = state.watch.map;
+
+  if (map && trip.routeCoords && trip.routeCoords.length && !state.watch.routeLine) {
+    state.watch.routeLine = L.polyline(trip.routeCoords, { color: '#3b82f6', weight: 5 }).addTo(map);
+    map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
+  }
+
+  if (map && trip.lastLocation) {
+    const ll = [trip.lastLocation.lat, trip.lastLocation.lon];
+    const icon = liveMarkerIcon(trip.lastLocation.heading);
+    const tooltipText = liveTooltipText(trip.lastLocation);
+    if (!state.watch.liveMarker) {
+      state.watch.liveMarker = L.marker(ll, { icon })
+        .bindTooltip(tooltipText, { permanent: true, direction: 'top', className: 'live-tooltip', offset: [0, -14] })
+        .addTo(map);
+    } else {
+      state.watch.liveMarker.setLatLng(ll);
+      state.watch.liveMarker.setIcon(icon);
+      state.watch.liveMarker.setTooltipContent(tooltipText);
+    }
+    if (trip.active) maybeRefreshWatchWeather(trip.lastLocation);
+  }
+
+  const ageSec = trip.lastLocation ? (Date.now() - (trip.lastLocation.updatedAt || 0)) / 1000 : null;
+  let status;
+  if (!trip.active) status = 'This trip has ended sharing.';
+  else if (!trip.lastLocation) status = "Waiting for the traveler's first location update…";
+  else {
+    status = `Heading to ${trip.destLabel || 'destination'} · updated ${ageSec < 60 ? Math.round(ageSec) + 's' : Math.round(ageSec / 60) + 'm'} ago` +
+      (ageSec > 120 ? ' — last known position may be stale' : '');
+  }
+  renderWatchStatus(status);
+}
+
+function renderWatchEvents(events) {
+  const el = document.getElementById('watchEvents');
+  if (!el) return;
+  el.innerHTML = events.length
+    ? events.map(renderEventItem).join('')
+    : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
+
+  const map = state.watch.map;
+  if (!map) return;
+  const seen = new Set();
+  events.forEach((ev) => {
+    if (typeof ev.lat !== 'number' || typeof ev.lon !== 'number') return;
+    seen.add(ev.id);
+    if (!state.watch.eventMarkers[ev.id]) {
+      state.watch.eventMarkers[ev.id] = makeEventMarker(ev).addTo(map);
+    }
+  });
+  Object.keys(state.watch.eventMarkers).forEach((id) => {
+    if (!seen.has(id)) { map.removeLayer(state.watch.eventMarkers[id]); delete state.watch.eventMarkers[id]; }
+  });
+}
+
 /* ============================== SETUP SCREEN LOGIC ============================== */
 
 function renderLegsList() {
@@ -1174,6 +1752,7 @@ function wireSetupScreen() {
       if (!state.map) initMap();
       drawRoute();
       onLocationUpdate();
+      renderSharePanel();
     } catch (e) {
       errEl.textContent = e.message;
     } finally {
@@ -1196,24 +1775,44 @@ function wireSettingsModal() {
   const orsInput = document.getElementById('orsKeyInput');
   const rangeInput = document.getElementById('rangeInput');
   const breakInput = document.getElementById('breakInput');
+  const locDeviceRadio = document.getElementById('locSourceDevice');
+  const locRelayRadio = document.getElementById('locSourceRelay');
+  const relayUrlRow = document.getElementById('relayUrlRow');
+  const relayUrlInput = document.getElementById('relayUrlInput');
+
+  function syncRelayRowVisibility() {
+    relayUrlRow.classList.toggle('hidden', !locRelayRadio.checked);
+  }
 
   function openModal() {
     orsInput.value = state.settings.orsKey || '';
     rangeInput.value = state.settings.rangeMiles || '';
     breakInput.value = state.settings.breakMinutes != null ? state.settings.breakMinutes : 120;
+    (state.settings.locationSource === 'relay' ? locRelayRadio : locDeviceRadio).checked = true;
+    relayUrlInput.value = state.settings.relayUrl || '';
+    syncRelayRowVisibility();
     modal.classList.remove('hidden');
   }
   openBtn.addEventListener('click', openModal);
   closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
+  locDeviceRadio.addEventListener('change', syncRelayRowVisibility);
+  locRelayRadio.addEventListener('change', syncRelayRowVisibility);
+
   saveBtn.addEventListener('click', () => {
     state.settings.orsKey = orsInput.value.trim();
     state.settings.rangeMiles = rangeInput.value ? parseFloat(rangeInput.value) : null;
     state.settings.breakMinutes = breakInput.value ? parseInt(breakInput.value, 10) : 0;
+    const newLocationSource = locRelayRadio.checked ? 'relay' : 'device';
+    const newRelayUrl = relayUrlInput.value.trim();
+    const locationSettingChanged = newLocationSource !== state.settings.locationSource || newRelayUrl !== state.settings.relayUrl;
+    state.settings.locationSource = newLocationSource;
+    state.settings.relayUrl = newRelayUrl;
     saveSettings(state.settings);
     modal.classList.add('hidden');
     refreshCalcButton();
     updateFuelPanel();
     toast('Settings saved.', 3000);
+    if (locationSettingChanged) startLocationSource();
   });
 
   if (!state.settings.orsKey) {
@@ -1262,6 +1861,7 @@ function wireVoiceControls() {
 
 function wireEndLeg() {
   document.getElementById('endLegBtn').addEventListener('click', () => {
+    if (state.share.active) stopSharing();
     state.route = null;
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('setupScreen').classList.remove('hidden');
@@ -1280,7 +1880,9 @@ function init() {
   wireSetupScreen();
   wireEndLeg();
   wireVoiceControls();
-  startGeolocation();
+  wireSharing();
+  wireWatchScreen();
+  startLocationSource();
 }
 
 document.addEventListener('DOMContentLoaded', init);
