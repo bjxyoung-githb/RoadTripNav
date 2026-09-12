@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Road Trip Navigator</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">🧭 Road Trip Navigator</div>
+  <button id="voiceToggleBtn" class="ghost-btn small" title="Toggle voice guidance">🔊</button>
+  <div id="connStatus" class="conn-status conn-unknown">GPS: waiting…</div>
+  <button id="settingsBtn" class="ghost-btn small">⚙</button>
+</header>
+
+<!-- SETTINGS / SETUP MODAL -->
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Settings</h2>
+    <label>OpenRouteService API key</label>
+    <input id="orsKeyInput" type="text" placeholder="Paste your free ORS API key here">
+    <div class="hint">
+      Free key: create an account at openrouteservice.org → Dashboard → Request a token
+      (choose the free "Standard" token). Needed for routing, turn-by-turn directions,
+      and destination search.
+    </div>
+
+    <label>Vehicle driving range on a full tank (miles, optional)</label>
+    <input id="rangeInput" type="number" min="0" placeholder="e.g. 400">
+    <div class="hint">Used for the fuel planner — warns you if the next gas stop is farther than your range.</div>
+
+    <label>Rest break reminder (minutes of continuous driving, 0 = off)</label>
+    <input id="breakInput" type="number" min="0" placeholder="120">
+
+    <div class="modal-actions">
+      <button id="saveSettingsBtn" class="primary-btn">Save</button>
+      <button id="closeSettingsBtn" class="ghost-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- DESTINATION / SETUP SCREEN -->
+<div id="setupScreen" class="setup-screen">
+  <div class="setup-card">
+    <h1>Plan your next leg</h1>
+    <p class="muted">Uses this phone's own GPS as the starting point automatically. You can also set a manual start.</p>
+
+    <button id="enableVoiceBtn" class="ghost-btn" style="width:100%;margin-bottom:14px;">🔊 Enable Voice Guidance</button>
+
+    <label>Starting point</label>
+    <div class="row">
+      <input id="startInput" type="text" placeholder="Using live GPS location" disabled>
+      <button id="manualStartBtn" class="ghost-btn small">Set manually</button>
+    </div>
+    <div id="startResults" class="results-list"></div>
+
+    <label>Destination city or address</label>
+    <input id="destInput" type="text" placeholder="e.g. Grand Canyon National Park, AZ">
+    <div id="destResults" class="results-list"></div>
+
+    <label>Label this leg (optional)</label>
+    <input id="legLabelInput" type="text" placeholder="e.g. Day 3 - to Sedona">
+
+    <button id="calcRouteBtn" class="primary-btn" disabled>Calculate Route</button>
+    <div id="setupError" class="error-text"></div>
+
+    <div id="legsPanel">
+      <h3>Saved legs</h3>
+      <div id="legsList" class="legs-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN DASHBOARD -->
+<div id="dashboard" class="dashboard hidden">
+  <div id="map"></div>
+
+  <div id="turnBanner" class="turn-banner">
+    <div id="statNextTurn" class="turn-instruction">–</div>
+    <div id="statNextTurnDist" class="turn-dist">Next turn</div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat">
+      <div class="stat-val" id="statMilesLeft">–</div>
+      <div class="stat-lbl">Miles left</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="statEta">–</div>
+      <div class="stat-lbl">ETA</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="statSpeed">–</div>
+      <div class="stat-lbl">MPH</div>
+    </div>
+    <button id="endLegBtn" class="ghost-btn small">New / End Leg</button>
+  </div>
+
+  <div id="accordion" class="accordion">
+
+    <details>
+      <summary>⛽ Fuel Planner</summary>
+      <div id="fuelPanel" class="panel-body muted">Set your vehicle range in Settings to enable.</div>
+    </details>
+
+    <details open>
+      <summary>🌦 Weather Ahead</summary>
+      <div id="weatherPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>⚠️ Road &amp; Weather Alerts</summary>
+      <div id="alertsPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>📍 Upcoming Stops</summary>
+      <div id="poiPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>⛰ Mountains Nearby</summary>
+      <div id="peaksPanel" class="panel-body muted">Loading…</div>
+      <div class="hint small">Named peaks near your location by straight-line distance — not a guaranteed line-of-sight view.</div>
+    </details>
+
+    <details>
+      <summary>☀️ Daylight</summary>
+      <div id="daylightPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>🚗 Drive Timer</summary>
+      <div id="breakPanel" class="panel-body muted">–</div>
+    </details>
+
+    <details>
+      <summary>🧭 Full turn-by-turn</summary>
+      <div id="stepsPanel" class="panel-body steps-list"></div>
+    </details>
+
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
