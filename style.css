@@ -32,6 +32,7 @@ button { cursor: pointer; font-family: inherit; }
 .ghost-btn {
   background: transparent; border: 1px solid var(--panel-border); color: var(--text);
   padding: 8px 14px; border-radius: 10px; font-size: 14px;
+  text-decoration: none; display: inline-block; /* also used on <a> (e.g. photo Save) */
 }
 .ghost-btn.small { padding: 6px 10px; font-size: 12px; }
 .ghost-btn.muted-toggle { opacity: .45; }
@@ -208,6 +209,21 @@ details[open] summary::after { transform: rotate(90deg); }
   width: 60px; height: 60px; object-fit: cover; border-radius: 8px; flex-shrink: 0;
   border: 1px solid var(--panel-border); background: #0d1526;
 }
+.event-photo-img { cursor: pointer; }
+.event-item-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.event-item-actions { display: flex; gap: 6px; margin-top: 4px; }
+.event-item-actions .ghost-btn { padding: 5px 9px; font-size: 11px; }
+
+.lightbox {
+  position: fixed; inset: 0; background: rgba(4,7,14,.94); z-index: 3000;
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
+.lightbox-close {
+  position: absolute; top: 14px; right: 14px; background: rgba(255,255,255,.14);
+  border: none; color: #fff; font-size: 18px; width: 40px; height: 40px;
+  border-radius: 50%; cursor: pointer; line-height: 1;
+}
 
 .event-marker { background: none; border: none; }
 .event-marker-icon {
@@ -234,6 +250,27 @@ details[open] summary::after { transform: rotate(90deg); }
   border: 1px solid var(--panel-border); overflow: hidden;
 }
 .watch-events { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
+
+/* Full-screen map mode for a viewer, same idea as the driver's own map:
+   hide everything but the map and let it fill the screen; the "Exit Full
+   Map" control (top-left, on the map itself) toggles back. */
+#watchScreen.watch-fullscreen {
+  padding: 0; align-items: stretch;
+}
+#watchScreen.watch-fullscreen .setup-card {
+  max-width: none; width: 100%; padding: 0; border-radius: 0; border: none;
+}
+#watchScreen.watch-fullscreen .setup-card > h1,
+#watchScreen.watch-fullscreen .setup-card > p.muted,
+#watchScreen.watch-fullscreen #watchStatus,
+#watchScreen.watch-fullscreen #watchWeather,
+#watchScreen.watch-fullscreen #watchEvents,
+#watchScreen.watch-fullscreen #watchBackBtn {
+  display: none;
+}
+#watchScreen.watch-fullscreen .watch-map {
+  height: 100vh; height: 100dvh; min-height: 0; border-radius: 0; border: none;
+}
 
 .map-toggle-btn {
   background: #121a2e; color: var(--text); border: 1px solid var(--panel-border);
