@@ -1403,7 +1403,14 @@ function makeEventMarker(ev) {
       : '';
     popupHtml = `<b>🎥 Video</b>${thumb}<br><a href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">▶ Watch on Google Drive</a>`;
   } else {
-    popupHtml = `<b>📷 Photo</b><br><img src="data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}" class="event-photo-img" style="max-width:220px;max-height:220px;cursor:pointer;" alt="Trip photo — tap to enlarge">`;
+    const src = `data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}`;
+    const filename = `trip-photo-${(ev.createdAt && ev.createdAt.toDate) ? ev.createdAt.toDate().getTime() : Date.now()}.jpg`;
+    popupHtml = `<b>📷 Photo</b><br>
+      <img src="${src}" class="event-photo-img" style="max-width:220px;max-height:220px;cursor:pointer;display:block;margin:6px 0;" alt="Trip photo — tap to enlarge">
+      <div class="event-item-actions">
+        <a href="${src}" download="${filename}" class="ghost-btn small">⬇ Save</a>
+        <button type="button" class="ghost-btn small share-photo-btn">📤 Share</button>
+      </div>`;
   }
   return L.marker([ev.lat, ev.lon], { icon }).bindPopup(popupHtml);
 }
@@ -1424,8 +1431,14 @@ function renderOwnEventMarkers(events) {
 function openPhotoLightbox(src) {
   const lb = document.getElementById('photoLightbox');
   const img = document.getElementById('lightboxImg');
+  const saveBtn = document.getElementById('lightboxSaveBtn');
   if (!lb || !img) return;
   img.src = src;
+  lb.dataset.src = src; // read by the Share button below
+  if (saveBtn) {
+    saveBtn.href = src;
+    saveBtn.download = 'trip-photo-' + Date.now() + '.jpg';
+  }
   lb.classList.remove('hidden');
 }
 
@@ -1462,9 +1475,17 @@ function wireEventActions() {
     if (photoImg) { openPhotoLightbox(photoImg.src); return; }
     const shareBtn = e.target.closest('.share-photo-btn');
     if (shareBtn) {
-      const item = shareBtn.closest('.event-item');
-      const img = item && item.querySelector('.event-photo-img');
+      // Works whether the button lives in a trip-log list item (.event-item)
+      // or a Leaflet map-pin popup (which wraps its content in
+      // .leaflet-popup-content instead) — find whichever container holds it.
+      const container = shareBtn.closest('.event-item') || shareBtn.closest('.leaflet-popup-content');
+      const img = container && container.querySelector('.event-photo-img');
       if (img) sharePhotoDataUrl(img.src);
+      return;
+    }
+    if (e.target.closest('#lightboxShareBtn')) {
+      const lb = document.getElementById('photoLightbox');
+      if (lb && lb.dataset.src) sharePhotoDataUrl(lb.dataset.src);
       return;
     }
     if (e.target.id === 'lightboxCloseBtn' || e.target.id === 'photoLightbox') {
