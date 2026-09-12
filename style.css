@@ -148,6 +148,12 @@ details[open] summary::after { transform: rotate(90deg); }
 .step-item.current { color: var(--accent); font-weight: 700; }
 .step-item .step-dist { color: var(--muted); font-size: 11px; }
 
+.pin-marker { background: none; border: none; }
+.pin-marker-icon {
+  font-size: 22px; line-height: 1; text-align: center;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.85)) drop-shadow(0 0 3px rgba(0,0,0,.6));
+}
+
 .peak-marker { background: none; border: none; }
 .peak-marker-icon {
   font-size: 20px; line-height: 1; text-align: center;
