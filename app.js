@@ -861,6 +861,37 @@ function initMap() {
     },
   });
   new LayerToggleControl().addTo(state.map);
+
+  state.mapFullscreen = false;
+  const FullscreenToggleControl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'leaflet-bar map-toggle-btn');
+      div.innerText = fullscreenControlLabel();
+      div.title = 'Expand the map to full screen, or return to the split view';
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.on(div, 'click', () => {
+        toggleMapFullscreen();
+        div.innerText = fullscreenControlLabel();
+      });
+      state.fullscreenToggleDiv = div;
+      return div;
+    },
+  });
+  new FullscreenToggleControl().addTo(state.map);
+}
+
+function fullscreenControlLabel() {
+  return state.mapFullscreen ? '↙ Exit Full Map' : '⛶ Full Map';
+}
+
+function toggleMapFullscreen() {
+  state.mapFullscreen = !state.mapFullscreen;
+  document.getElementById('dashboard').classList.toggle('map-fullscreen', state.mapFullscreen);
+  if (state.fullscreenToggleDiv) state.fullscreenToggleDiv.innerText = fullscreenControlLabel();
+  // The map's container just changed size via CSS; Leaflet needs to be told
+  // so it re-measures and doesn't leave stale/partial tiles at the edges.
+  setTimeout(() => { if (state.map) state.map.invalidateSize(); }, 50);
 }
 
 function layerControlLabel() {
