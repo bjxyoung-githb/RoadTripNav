@@ -273,6 +273,14 @@ short piece of text and costs nothing either.
    Storage itself won't be turned on — it's just part of the standard config
    block and harmless to leave in.) Save the file.
 
+   **This file is yours to keep.** It's kept separate from the rest of the
+   app on purpose: future updates to `index.html`, `app.js`, `style.css`,
+   or this README won't touch `firebase-config.js`, so filling it in once
+   here is permanent — you won't need to re-enter these values again.
+   (`firebase-config.sample.js` is just a reference copy of the same
+   template with the setup instructions; the app doesn't load it and it
+   doesn't need to go in your repo.)
+
 ### 7b. Turn on the two Firebase features this uses
 
 Both in the Firebase console's left sidebar, under **Build** — and both
