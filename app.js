@@ -111,7 +111,7 @@ const state = {
   eventMarkers: [],
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, events: [], lastPushAt: 0, lastPushLoc: null },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, fullscreen: false },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -949,35 +949,44 @@ function initMap() {
   new LayerToggleControl().addTo(state.map);
 
   state.mapFullscreen = false;
+  addFullscreenToggleControl(state.map, () => state.mapFullscreen, toggleMapFullscreen);
+}
+
+// Shared by both the driver's own map and a viewer's watch map — a small
+// on-map control that expands the map to fill the screen and hides
+// everything else, then flips back. `isFullscreen`/`toggle` let each map
+// keep its own independent fullscreen state.
+function addFullscreenToggleControl(map, isFullscreen, toggle) {
+  const label = () => (isFullscreen() ? '↙ Exit Full Map' : '⛶ Full Map');
   const FullscreenToggleControl = L.Control.extend({
     options: { position: 'topleft' },
     onAdd: function () {
       const div = L.DomUtil.create('div', 'leaflet-bar map-toggle-btn');
-      div.innerText = fullscreenControlLabel();
-      div.title = 'Expand the map to full screen, or return to the split view';
+      div.innerText = label();
+      div.title = 'Expand the map to full screen, or return to the normal view';
       L.DomEvent.disableClickPropagation(div);
       L.DomEvent.on(div, 'click', () => {
-        toggleMapFullscreen();
-        div.innerText = fullscreenControlLabel();
+        toggle();
+        div.innerText = label();
       });
-      state.fullscreenToggleDiv = div;
       return div;
     },
   });
-  new FullscreenToggleControl().addTo(state.map);
-}
-
-function fullscreenControlLabel() {
-  return state.mapFullscreen ? '↙ Exit Full Map' : '⛶ Full Map';
+  return new FullscreenToggleControl().addTo(map);
 }
 
 function toggleMapFullscreen() {
   state.mapFullscreen = !state.mapFullscreen;
   document.getElementById('dashboard').classList.toggle('map-fullscreen', state.mapFullscreen);
-  if (state.fullscreenToggleDiv) state.fullscreenToggleDiv.innerText = fullscreenControlLabel();
   // The map's container just changed size via CSS; Leaflet needs to be told
   // so it re-measures and doesn't leave stale/partial tiles at the edges.
   setTimeout(() => { if (state.map) state.map.invalidateSize(); }, 50);
+}
+
+function toggleWatchFullscreen() {
+  state.watch.fullscreen = !state.watch.fullscreen;
+  document.getElementById('watchScreen').classList.toggle('watch-fullscreen', state.watch.fullscreen);
+  setTimeout(() => { if (state.watch.map) state.watch.map.invalidateSize(); }, 50);
 }
 
 function layerControlLabel() {
@@ -1364,9 +1373,18 @@ function renderEventItem(ev) {
       <div class="item-sub">${when}</div></div></a>`;
   }
   const src = `data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}`;
-  return `<div class="event-item"><img src="${src}" class="event-thumb" alt="Trip photo" loading="lazy"><div>
-    <div class="item-main">📷 Photo</div>
-    <div class="item-sub">${when}</div></div></div>`;
+  const filename = `trip-photo-${(ev.createdAt && ev.createdAt.toDate) ? ev.createdAt.toDate().getTime() : Date.now()}.jpg`;
+  return `<div class="event-item">
+    <img src="${src}" class="event-thumb event-photo-img" alt="Trip photo — tap to enlarge" loading="lazy">
+    <div class="event-item-body">
+      <div class="item-main">📷 Photo</div>
+      <div class="item-sub">${when}</div>
+      <div class="event-item-actions">
+        <a href="${src}" download="${filename}" class="ghost-btn small">⬇ Save</a>
+        <button type="button" class="ghost-btn small share-photo-btn">📤 Share</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function makeEventMarker(ev) {
@@ -1385,7 +1403,7 @@ function makeEventMarker(ev) {
       : '';
     popupHtml = `<b>🎥 Video</b>${thumb}<br><a href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">▶ Watch on Google Drive</a>`;
   } else {
-    popupHtml = `<b>📷 Photo</b><br><img src="data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}" style="max-width:220px;max-height:220px;">`;
+    popupHtml = `<b>📷 Photo</b><br><img src="data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}" class="event-photo-img" style="max-width:220px;max-height:220px;cursor:pointer;" alt="Trip photo — tap to enlarge">`;
   }
   return L.marker([ev.lat, ev.lon], { icon }).bindPopup(popupHtml);
 }
@@ -1396,6 +1414,62 @@ function renderOwnEventMarkers(events) {
   events.forEach((ev) => {
     if (typeof ev.lat !== 'number' || typeof ev.lon !== 'number') return;
     state.eventMarkers.push(makeEventMarker(ev).addTo(state.map));
+  });
+}
+
+/* --- Photo lightbox + save/share, shared by the driver's own trip log and
+   every viewer's event list/map pins (any element with class
+   event-photo-img opens it; wired once via delegated clicks below). --- */
+
+function openPhotoLightbox(src) {
+  const lb = document.getElementById('photoLightbox');
+  const img = document.getElementById('lightboxImg');
+  if (!lb || !img) return;
+  img.src = src;
+  lb.classList.remove('hidden');
+}
+
+function closePhotoLightbox() {
+  const lb = document.getElementById('photoLightbox');
+  const img = document.getElementById('lightboxImg');
+  if (lb) lb.classList.add('hidden');
+  if (img) img.src = '';
+}
+
+// Uses the Web Share API (native share sheet — Messages, email, save to
+// Photos, etc.) when the browser supports sharing files; otherwise just
+// opens the photo in a new tab so it can be saved/shared manually.
+async function sharePhotoDataUrl(dataUrl) {
+  try {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const file = new File([blob], 'trip-photo.jpg', { type: blob.type || 'image/jpeg' });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Trip photo' });
+    } else {
+      window.open(dataUrl, '_blank');
+    }
+  } catch (e) {
+    if (e && e.name !== 'AbortError') { // AbortError = user just closed the share sheet
+      toast("Couldn't share photo: " + e.message, 5000);
+    }
+  }
+}
+
+function wireEventActions() {
+  document.addEventListener('click', (e) => {
+    const photoImg = e.target.closest('.event-photo-img');
+    if (photoImg) { openPhotoLightbox(photoImg.src); return; }
+    const shareBtn = e.target.closest('.share-photo-btn');
+    if (shareBtn) {
+      const item = shareBtn.closest('.event-item');
+      const img = item && item.querySelector('.event-photo-img');
+      if (img) sharePhotoDataUrl(img.src);
+      return;
+    }
+    if (e.target.id === 'lightboxCloseBtn' || e.target.id === 'photoLightbox') {
+      closePhotoLightbox();
+    }
   });
 }
 
@@ -1564,6 +1638,8 @@ function stopWatching() {
   if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
   state.watch.routeLine = null;
   state.watch.liveMarker = null;
+  state.watch.fullscreen = false;
+  document.getElementById('watchScreen').classList.remove('watch-fullscreen');
 }
 
 // A plain up-arrow rotated to the reported heading reads as a direction-of-
@@ -1620,6 +1696,8 @@ function initWatchMap() {
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
   state.watch.map = map;
+  state.watch.fullscreen = false;
+  addFullscreenToggleControl(map, () => state.watch.fullscreen, toggleWatchFullscreen);
   if (state.watch.trip) renderWatchTrip();
   if (state.watch.events) renderWatchEvents(state.watch.events);
 }
@@ -2002,6 +2080,7 @@ function init() {
   wireVoiceControls();
   wireSharing();
   wireWatchScreen();
+  wireEventActions();
   startLocationSource();
 }
 
