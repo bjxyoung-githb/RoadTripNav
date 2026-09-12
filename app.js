@@ -1134,15 +1134,19 @@ async function generateUniquePin(db, uid) {
 
 // Firestore documents are capped at 1MB; a multi-day route can have
 // thousands of coordinate points, so thin it down to a shape that's still
-// plenty smooth on a viewer's map.
+// plenty smooth on a viewer's map. Points are stored as {lat, lon} objects
+// rather than [lat, lon] pairs because Firestore flatly rejects an array
+// that contains other arrays ("nested arrays are not supported") — an
+// array of maps is fine, an array of arrays is not.
 function sampleRouteForShare(coords, maxPoints) {
   maxPoints = maxPoints || 300;
-  if (coords.length <= maxPoints) return coords.map((c) => [c[1], c[0]]);
+  const toPoint = (c) => ({ lat: c[1], lon: c[0] });
+  if (coords.length <= maxPoints) return coords.map(toPoint);
   const out = [];
   const step = (coords.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
     const idx = Math.round(i * step);
-    out.push([coords[idx][1], coords[idx][0]]);
+    out.push(toPoint(coords[idx]));
   }
   return out;
 }
@@ -1631,7 +1635,8 @@ function renderWatchTrip() {
   const map = state.watch.map;
 
   if (map && trip.routeCoords && trip.routeCoords.length && !state.watch.routeLine) {
-    state.watch.routeLine = L.polyline(trip.routeCoords, { color: '#3b82f6', weight: 5 }).addTo(map);
+    const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
+    state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
     map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
   }
 
