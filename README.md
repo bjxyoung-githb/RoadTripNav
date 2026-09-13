@@ -30,7 +30,7 @@ like this is free and takes about 5 minutes, with no ongoing maintenance.
 
 1. On a computer, go to **app.netlify.com/drop** in a browser.
 2. Drag the whole folder of files from this download (index.html, app.js,
-   style.css) onto the page.
+   style.css, manifest.json, and the assets folder) onto the page.
 3. Netlify gives you a URL like `https://random-name-1234.netlify.app` —
    that's your app's permanent address. Open it on your phone and you're
    navigating.
@@ -40,13 +40,15 @@ like this is free and takes about 5 minutes, with no ongoing maintenance.
 
 ### Alternative: GitHub Pages (if you already use GitHub)
 
-1. Create a new repository on GitHub, upload `index.html`, `app.js`, and
-   `style.css` to it.
+1. Create a new repository on GitHub, upload `index.html`, `app.js`,
+   `style.css`, `manifest.json`, and the whole `assets` folder (the app's
+   icon) to it, keeping the same folder structure.
 2. In the repo's Settings → Pages, set the source to your main branch.
 3. GitHub gives you a URL like `https://yourname.github.io/reponame/`.
 
 Either way, once it's hosted, **bookmark the URL on your phone** (or use
-your browser's "Add to Home Screen" option so it opens like an app).
+your browser's "Add to Home Screen" option so it opens like an app — it'll
+use the app's compass icon rather than a generic browser icon).
 
 ### Get a free OpenRouteService API key (~2 minutes)
 
@@ -339,3 +341,34 @@ use (50K reads + 20K writes/day, 1GB of stored data) — no billing account
 is attached to your project at all, so there's nothing to be charged for.
 Each shared photo does count against that 1GB (compressed to roughly
 100–700KB each), which is still room for hundreds of photos across the trip.
+
+### 7d. Turn on automatic photo cleanup (one-time, optional but recommended)
+
+Nothing in Firestore ever deletes itself on its own — without this step,
+every photo from every trip you ever share would sit there forever. The app
+already tags each photo it uploads with an `expiresAt` field set 90 days
+out; you just need to tell Firestore, once, to actually act on that field:
+
+1. In the Firebase console, open **Firestore Database** → look for a **TTL**
+   (sometimes labeled "Time-to-live policies") tab — it's usually next to
+   the **Indexes** tab.
+2. **Create policy** (or **Add policy**):
+   - Collection group: `events`
+   - Timestamp field: `expiresAt`
+3. Save/create it.
+
+That's the whole setup. From then on, Firestore quietly deletes each photo
+document roughly 90 days after it was added — no app code runs this, it
+happens even if the app is never opened again, and it doesn't require the
+paid Blaze plan (TTL deletions are a built-in Firestore feature and count
+as ordinary, free document deletes, well within the 20K/day free quota).
+
+**What this does and doesn't touch:**
+- Only **photos** expire this way (the large base64 image data). Comments
+  and video links are tiny text and are kept forever.
+- The trip's route line, label, and passcode (the `trips/{pin}` document
+  itself) are never touched — only individual photo documents inside it.
+- The **Saved legs** list on the setup screen ("Use as destination" for a
+  previous address) is completely separate — it lives only in this
+  phone's local storage, was never stored in Firestore, and is
+  unaffected by any of this.
