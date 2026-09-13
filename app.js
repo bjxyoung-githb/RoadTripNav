@@ -897,7 +897,7 @@ async function onLocationUpdate() {
   if (remaining < 0.05) {
     if (!state.arrivalAnnounced) {
       state.arrivalAnnounced = true;
-      toast('🎉 You have arrived at your destination!', 8000);
+      toast('🎉 You have arrived! Tap "🏁 End This Leg / Plan Next Leg" below when you\'re ready to plan the next stretch.', 10000);
       speak('You have arrived at your destination.');
     }
   }
