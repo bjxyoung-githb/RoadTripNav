@@ -160,9 +160,16 @@ avoids that.
 - **Drive Timer** — tracks continuous driving time (based on GPS speed) and
   pops up a reminder at the interval you set in Settings.
 - **Share & Trip Log** (optional, needs one-time setup — see section 7) —
-  tap **Start Sharing This Leg** to get a 6-digit passcode. Anyone you give
-  it to can open this same web address, tap **Watch someone else's shared
-  trip**, enter the code, and see your route and a live-updating arrow at
+  tap **Start Sharing This Leg** to get a one-tap link (and a 6-digit
+  passcode as a backup) to give to family. Tap **📤 Share Link** to send it
+  straight through your phone's own Messages/email share sheet, or **📋
+  Copy** to paste it yourself. Whoever you send it to just taps the link —
+  it opens this app already on the "watching" screen with nothing to type
+  in, no passcode, no navigating around. (The 6-digit passcode still works
+  too, tucked under "Or give them the 6-digit passcode instead," for the
+  rare case the link doesn't work for someone — they'd open this same web
+  address, tap **Watch someone else's shared trip**, and enter it by hand.)
+  Either way they end up seeing your route and a live-updating arrow at
   your position (rotated to your direction of travel, with your current
   speed/heading, elevation, and the weather right where you are), plus any
   photos/videos/comments you add — all without installing anything or
@@ -226,7 +233,12 @@ avoids that.
 - **A viewer gets "No trip found with that passcode"** — either the code was
   mistyped, sharing was already stopped, or the trip's passcode was
   regenerated (each time you tap **Start Sharing** you get a new one — send
-  the latest code, not an old one).
+  the latest code, not an old one). The same goes for the shareable link —
+  it has the passcode baked into it, so an old link stops working the same
+  way an old passcode would; always send the current one shown in the app.
+- **"📤 Share Link" doesn't do anything, or there's no share popup** — some
+  browsers (mostly on desktop) don't offer that share-sheet feature; tap
+  **📋 Copy** instead and paste the link into your text/email app by hand.
 - **"Photo is too large to fit even after compression"** — very rare; means
   the app shrank the photo as far as it reasonably can and it still won't
   fit. Try a different photo, or a screenshot of it, instead.
@@ -254,13 +266,14 @@ avoids that.
   style would — worth knowing if you're on a limited cellular data plan as
   a backup to Starlink.
 - Trip sharing has no login for viewers by design (that's what makes it
-  zero-setup for family) — anyone who has the current 6-digit passcode can
-  watch that trip while it's active. Passcodes are random and change every
-  time you start sharing, and only your own phone (tied to a private key
-  Firebase generates the first time you use this feature) can ever post
-  location/photos/videos/comments as you, but treat the passcode itself like a
-  house key: share it only with people you trust, and tap **Stop Sharing**
-  when you don't want it usable anymore.
+  zero-setup for family) — anyone who has the current 6-digit passcode (or
+  the link, which has that same passcode built into it) can watch that trip
+  while it's active. Passcodes/links are random and change every time you
+  start sharing, and only your own phone (tied to a private key Firebase
+  generates the first time you use this feature) can ever post
+  location/photos/videos/comments as you, but treat the link or passcode
+  itself like a house key: share it only with people you trust, and tap
+  **Stop Sharing** when you don't want it usable anymore.
 
 ## 6. Running it on a PC instead of a phone (optional)
 
