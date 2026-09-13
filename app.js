@@ -74,6 +74,15 @@ function toast(msg, ms) {
 const LS_SETTINGS = 'rtnav_settings_v1';
 const LS_TRIP = 'rtnav_trip_v1';
 
+// How long a shared photo's image data lives in Firestore before Firestore's
+// own TTL policy auto-deletes it (see README.md section 7 for the one-time
+// console setup). Only photo events get this field — comments and video
+// links (which just hold a small Google Drive URL, not the video itself)
+// are lightweight and never expire. This never touches the separate,
+// on-device "Saved legs" list used for "Use as destination" — that data
+// lives only in this browser's local storage, not Firestore.
+const MEDIA_TTL_DAYS = 90;
+
 function loadSettings() {
   const defaults = {
     orsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false,
@@ -1292,12 +1301,14 @@ async function addPhoto(file) {
   toast('Adding photo…', 8000);
   try {
     const { base64, mediaType } = await compressImageForFirestore(file);
+    const expiresAt = new Date(Date.now() + MEDIA_TTL_DAYS * 24 * 60 * 60 * 1000);
     await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
       type: 'photo',
       mediaData: base64,
       mediaType,
       lat: state.loc.lat, lon: state.loc.lon,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      expiresAt, // Firestore TTL policy (see README section 7) auto-deletes this document ~90 days out
     });
     toast('Photo added to your trip.', 4000);
   } catch (e) {
