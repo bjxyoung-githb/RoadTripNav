@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13';
+const APP_VERSION = 'v2026.09.13.4';
 
 /* ============================== UTILITIES ============================== */
 
@@ -143,12 +143,16 @@ const state = {
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
-  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, events: [], lastPushAt: 0, lastPushLoc: null },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, fullscreen: false },
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, viewerCount: 0, events: [], lastPushAt: 0, lastPushLoc: null },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
-function clearMarkers(arr) { arr.forEach((m) => state.map.removeLayer(m)); arr.length = 0; }
+function clearMarkers(arr, map) {
+  const target = map || state.map;
+  arr.forEach((m) => target.removeLayer(m));
+  arr.length = 0;
+}
 
 /* ============================== ORS API ============================== */
 
@@ -231,6 +235,7 @@ async function orsRoute(start, end) {
       units: 'mi',
       instructions: true,
       language: 'en',
+      elevation: true, // adds a 3rd [lon,lat,ele(m)] value per point — used for the live Elevation stat
     }),
   });
   if (!res.ok) {
@@ -239,7 +244,7 @@ async function orsRoute(start, end) {
   }
   const geojson = await res.json();
   const feature = geojson.features[0];
-  const coords = feature.geometry.coordinates; // [lon,lat]
+  const coords = feature.geometry.coordinates; // [lon,lat] or [lon,lat,ele(m)]
   const steps = feature.properties.segments[0].steps;
 
   // Build cumulative distance (mi) per coordinate index using haversine.
@@ -813,6 +818,19 @@ function findNearestIndex(lat, lon) {
   return { idx: best, dist: bestD };
 }
 
+// Reads elevation (in feet) at the driver's current position on the route,
+// using the elevation ORS already returned with the route coordinates
+// (requested via elevation:true in orsRoute()) rather than a phone's own
+// GPS altitude, which is often missing or inaccurate. Returns null if no
+// elevation data is available (e.g. route not loaded yet, or the ORS
+// response didn't include it).
+function currentElevationFt() {
+  if (!state.route || !state.route.coords) return null;
+  const pt = state.route.coords[nearestIndexCache];
+  const elevM = pt && pt.length >= 3 ? pt[2] : null;
+  return typeof elevM === 'number' ? Math.round(elevM * M_TO_FT) : null;
+}
+
 async function maybeReroute(offRouteMiles, curLat, curLon) {
   const now = Date.now();
   if (offRouteMiles < 0.5) return false;
@@ -886,6 +904,15 @@ async function onLocationUpdate() {
   const speedMph = typeof cur.speed === 'number' && cur.speed >= 0 ? cur.speed * MPS_TO_MPH : null;
   document.getElementById('statSpeed').textContent = speedMph != null ? Math.round(speedMph) : '–';
   updateBaseLayerForSpeed(speedMph);
+
+  // Elevation comes straight from the route ORS already returned (requested
+  // with elevation:true — see orsRoute()) rather than a phone's own GPS
+  // altitude reading, which is notoriously inaccurate/often missing
+  // entirely on most phones. Reads instantly off the same nearest-point
+  // lookup used for progress/ETA above, so there's no extra network call
+  // and no delay as you drive.
+  const elevFt = currentElevationFt();
+  document.getElementById('statElevation').textContent = elevFt != null ? elevFt.toLocaleString() + ' ft' : '–';
 
   // Determine current/next step
   const steps = state.route.steps;
@@ -1265,7 +1292,7 @@ async function startSharing() {
       active: true,
       routeCoords,
       totalMiles: state.route.totalDist,
-      lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, updatedAt: Date.now() } : null,
+      lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: Date.now() } : null,
     });
 
     state.share.active = true;
@@ -1273,8 +1300,10 @@ async function startSharing() {
     state.share.ownerUid = uid;
     state.share.lastPushAt = Date.now();
     state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+    state.share.viewerCount = 0;
     rememberOwnTrip(pin);
     subscribeOwnEvents(pin);
+    subscribeViewerCount(pin);
     renderSharePanel();
     toast('Sharing started — passcode ' + pin, 6000);
   } catch (e) {
@@ -1286,6 +1315,7 @@ async function stopSharing() {
   const sh = state.share;
   const pin = sh.pin;
   if (sh.unsubEvents) { sh.unsubEvents(); sh.unsubEvents = null; }
+  if (sh.unsubViewers) { sh.unsubViewers(); sh.unsubViewers = null; }
   if (pin && state.fb) {
     try {
       await state.fb.db.collection('trips').doc(pin).set(
@@ -1294,7 +1324,7 @@ async function stopSharing() {
   }
   clearMarkers(state.eventMarkers);
   sh.active = false; sh.pin = null; sh.ownerUid = null; sh.events = [];
-  sh.lastPushAt = 0; sh.lastPushLoc = null;
+  sh.lastPushAt = 0; sh.lastPushLoc = null; sh.viewerCount = 0;
   renderSharePanel();
   toast('Sharing stopped.', 3000);
 }
@@ -1308,9 +1338,36 @@ function maybePushShareLocation() {
   sh.lastPushAt = now;
   sh.lastPushLoc = { lat: state.loc.lat, lon: state.loc.lon };
   state.fb.db.collection('trips').doc(sh.pin).set({
-    lastLocation: { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, updatedAt: now },
+    lastLocation: { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: now },
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
   }, { merge: true }).catch(() => { /* best effort; next cycle retries */ });
+}
+
+// Lets the traveler alone see how many people are actively watching their
+// shared trip right now — never shown to viewers themselves. This works
+// because Firestore's security rules (see README section 7b) only allow
+// the trip's owner to read this "viewers" presence subcollection at all;
+// each viewer can only write their own single presence doc, not read
+// anyone else's, so there's no way for a viewer to see this count even by
+// inspecting network traffic in their own browser.
+function subscribeViewerCount(pin) {
+  const sh = state.share;
+  if (sh.unsubViewers) { sh.unsubViewers(); sh.unsubViewers = null; }
+  sh.unsubViewers = state.fb.db.collection('trips').doc(pin).collection('viewers')
+    .onSnapshot((snap) => {
+      const now = Date.now();
+      let count = 0;
+      snap.forEach((doc) => {
+        const d = doc.data();
+        // A presence doc just written with serverTimestamp() can briefly
+        // read back with no resolved timestamp yet (pending server ack) —
+        // treat that as "just now" rather than undercounting it.
+        const seenAt = (d.lastSeenAt && typeof d.lastSeenAt.toMillis === 'function') ? d.lastSeenAt.toMillis() : now;
+        if (now - seenAt < 90 * 1000) count++;
+      });
+      sh.viewerCount = count;
+      renderSharePanel();
+    }, () => { /* best effort — leave last known count showing */ });
 }
 
 function subscribeOwnEvents(pin) {
@@ -1643,6 +1700,7 @@ function renderSharePanel() {
       <div class="share-pin-lbl">Passcode to watch this trip</div>
       <div class="share-pin-big">${sh.pin}</div>
       <div class="hint">Give this 6-digit code to family — they open this same web address, tap "Watch someone else's shared trip," and enter it.</div>
+      <div class="viewer-count-badge">👀 ${sh.viewerCount || 0} watching now</div>
     </div>
     <div class="share-actions">
       <button id="addPhotoBtn" class="ghost-btn small">📷 Add Photo</button>
@@ -1760,7 +1818,7 @@ async function watchTrip(pin) {
     return;
   }
   try {
-    const { db } = await initFirebase();
+    const { db, uid } = await initFirebase();
     const snap = await db.collection('trips').doc(pin).get();
     if (!snap.exists) { errEl.textContent = 'No trip found with that passcode.'; return; }
 
@@ -1769,6 +1827,19 @@ async function watchTrip(pin) {
     document.getElementById('watchPinEntry').classList.add('hidden');
     document.getElementById('watchLive').classList.remove('hidden');
     setTimeout(initWatchMap, 0);
+
+    // Let the traveler see that someone's watching (as a simple count, on
+    // their screen only — this app never shows a viewer who else is
+    // watching). Just a lightweight "I'm here" heartbeat, refreshed every
+    // 30s while this screen stays open.
+    state.watch.presenceUid = uid;
+    const writePresence = () => {
+      db.collection('trips').doc(pin).collection('viewers').doc(uid).set({
+        lastSeenAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }).catch(() => { /* best effort */ });
+    };
+    writePresence();
+    state.watch.presenceInterval = setInterval(writePresence, 30000);
 
     state.watch.unsubTrip = db.collection('trips').doc(pin).onSnapshot((doc) => {
       if (!doc.exists) { renderWatchStatus('This trip is no longer available.'); return; }
@@ -1792,12 +1863,23 @@ async function watchTrip(pin) {
 function stopWatching() {
   if (state.watch.unsubTrip) { state.watch.unsubTrip(); state.watch.unsubTrip = null; }
   if (state.watch.unsubEvents) { state.watch.unsubEvents(); state.watch.unsubEvents = null; }
+  if (state.watch.presenceInterval) { clearInterval(state.watch.presenceInterval); state.watch.presenceInterval = null; }
+  if (state.fb && state.watch.pin && state.watch.presenceUid) {
+    // Best-effort — leaving means "not watching," so remove the presence
+    // doc rather than letting it linger until it ages out on its own.
+    state.fb.db.collection('trips').doc(state.watch.pin).collection('viewers').doc(state.watch.presenceUid)
+      .delete().catch(() => { /* best effort */ });
+  }
+  state.watch.presenceUid = null;
   state.watch.pin = null;
   state.watch.trip = null;
   state.watch.events = [];
   state.watch.eventMarkers = {};
   state.watch.weatherFetchedAt = 0;
   state.watch.weatherLoc = null;
+  state.watch.peaksFetchedAt = 0;
+  state.watch.peaksLoc = null;
+  state.watch.peakMarkers = [];
   if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
   state.watch.routeLine = null;
   state.watch.liveMarker = null;
@@ -1853,6 +1935,69 @@ async function maybeRefreshWatchWeather(loc) {
   }
 }
 
+// Same idea as the driver's own "⛰ Mountains Nearby" panel (refreshPeaks()),
+// reusing the same free Overpass lookup, but centered on the traveler's
+// live position instead of the viewer's own. Throttled a bit more gently
+// than the driver's copy (15 min / 10 mi vs. 8/8) since this runs on top of
+// whatever the traveler's own phone is already asking Overpass for, and
+// there may be more than one viewer doing this at once.
+async function maybeRefreshWatchPeaks(loc) {
+  const w = state.watch;
+  const now = Date.now();
+  const movedFar = !w.peaksLoc || haversineMiles(w.peaksLoc.lat, w.peaksLoc.lon, loc.lat, loc.lon) > 10;
+  if (w.peaksFetchedAt && now - w.peaksFetchedAt < 15 * 60 * 1000 && !movedFar) return;
+  w.peaksFetchedAt = now;
+  w.peaksLoc = { lat: loc.lat, lon: loc.lon };
+
+  const panel = document.getElementById('watchPeaksPanel');
+  const radiusM = 64000; // ~40 mi, same radius as the driver's own panel
+  const ql = `[out:json][timeout:20];
+(
+  node["natural"="peak"]["name"]["ele"](around:${radiusM},${loc.lat},${loc.lon});
+);
+out 60;`;
+  try {
+    const json = await overpassQuery(ql);
+    let items = json.elements.map((el) => {
+      const dist = haversineMiles(loc.lat, loc.lon, el.lat, el.lon);
+      const brg = bearingDeg(loc.lat, loc.lon, el.lat, el.lon);
+      const eleM = parseFloat(el.tags.ele);
+      return { name: el.tags.name, eleFt: Math.round(eleM * M_TO_FT), dist, brg, lat: el.lat, lon: el.lon };
+    }).filter((el) => !isNaN(el.eleFt));
+    items.sort((a, b) => a.dist - b.dist);
+    items = items.slice(0, 10);
+
+    clearMarkers(state.watch.peakMarkers, state.watch.map);
+    if (panel) {
+      panel.innerHTML = items.length
+        ? items.map((el) => `
+            <div class="item-row"><div>
+              <div class="item-main">⛰ ${el.name}</div>
+              <div class="item-sub">${el.eleFt.toLocaleString()} ft elev · ${compass(el.brg)} of the traveler</div>
+            </div><div class="item-right">${fmtMiles(el.dist)}</div></div>`).join('')
+        : '<span class="muted">No named peaks with elevation data within 40 miles.</span>';
+    }
+    if (state.watch.map) {
+      items.slice(0, 6).forEach((el) => {
+        const icon = L.divIcon({
+          className: 'peak-marker',
+          html: '<div class="peak-marker-icon">⛰️</div>',
+          iconSize: [26, 26],
+          iconAnchor: [13, 22],
+          tooltipAnchor: [0, -18],
+        });
+        const m = L.marker([el.lat, el.lon], { icon, keyboard: false })
+          .bindTooltip(`${el.name} · ${el.eleFt.toLocaleString()} ft`, { permanent: true, direction: 'top', className: 'peak-tooltip' })
+          .bindPopup(`<b>${el.name}</b><br>${el.eleFt.toLocaleString()} ft elevation<br>${fmtMiles(el.dist)} ${compass(el.brg)} of the traveler`)
+          .addTo(state.watch.map);
+        state.watch.peakMarkers.push(m);
+      });
+    }
+  } catch (e) {
+    if (panel) panel.innerHTML = `<span class="muted">Peak lookup error: ${e.message}</span>`;
+  }
+}
+
 function initWatchMap() {
   if (state.watch.map) return;
   const map = L.map('watchMap', { zoomControl: true }).setView([37.5, -96], 4);
@@ -1893,6 +2038,15 @@ function renderWatchTrip() {
   if (!trip) return;
   const map = state.watch.map;
 
+  // Elevation is already sitting on the trip doc (the driver computes it
+  // for free off their own route data — see currentElevationFt()), so this
+  // is just a display, no extra lookup needed.
+  const elevEl = document.getElementById('watchElevation');
+  if (elevEl) {
+    const ef = trip.lastLocation && typeof trip.lastLocation.elevationFt === 'number' ? trip.lastLocation.elevationFt : null;
+    elevEl.textContent = ef != null ? `⛰ Traveler's current elevation: ${ef.toLocaleString()} ft` : '';
+  }
+
   if (map && trip.routeCoords && trip.routeCoords.length && !state.watch.routeLine) {
     const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
     state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
@@ -1915,7 +2069,10 @@ function renderWatchTrip() {
     if (state.watch.followMe) {
       map.panTo(ll, { animate: true, duration: 0.5 });
     }
-    if (trip.active) maybeRefreshWatchWeather(trip.lastLocation);
+    if (trip.active) {
+      maybeRefreshWatchWeather(trip.lastLocation);
+      maybeRefreshWatchPeaks(trip.lastLocation);
+    }
   }
 
   const ageSec = trip.lastLocation ? (Date.now() - (trip.lastLocation.updatedAt || 0)) / 1000 : null;
