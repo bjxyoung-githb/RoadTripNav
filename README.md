@@ -170,7 +170,13 @@ avoids that.
   their screen shows named peaks around your current position too, the
   same way it does on your own dashboard. Use the 📷, 🎥, and 💬 buttons in this panel to drop
   a geotagged photo, video link, or comment; they show up as pins on both
-  your map and every viewer's map. Photos are automatically
+  your map and every viewer's map. Each one is tagged with the GPS
+  coordinates, temperature, and elevation at the moment you added it,
+  shown right next to its timestamp in the trip log list and in its map pin
+  (temperature comes from whatever "Weather Ahead" last fetched for your
+  current spot — up to about 10 minutes old — rather than a fresh lookup
+  every time, to keep this free and fast; entries added before this feature
+  existed just won't show that line). Photos are automatically
   shrunk/compressed and stored right in the app to keep this feature
   entirely free (see section 7). Video works a little differently: record
   it with your phone's normal camera app, upload it to Google Drive (or
