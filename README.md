@@ -104,6 +104,16 @@ listed so you can quickly reselect a place you've already routed to.
   routed somewhere else.
 - **Miles left / ETA / speed** — computed from your live position against
   the route, refreshed continuously as your phone reports new GPS fixes.
+- **Auto-follow** — the map recenters on your position as you drive, so you
+  never have to nudge it back into view yourself. Drag the map to look
+  around (check an upcoming turn, a nearby town, etc.) and auto-follow
+  pauses — a blue **⌖ Recenter** button appears in the bottom-right corner;
+  tap it to snap back to your position and resume following. Pinching or
+  scrolling to zoom in/out never pauses it — only dragging the map does.
+  Starting a new leg always begins back in auto-follow. Anyone watching
+  your shared trip (section 7) gets the exact same behavior on their end —
+  their map follows your live position, pauses the same way if they drag
+  to look around, and gets the same Recenter button back.
 - **Satellite / street map** — satellite by default (with labels layered
   on top), switches to street view below 40mph and back above 50mph, with
   a several-second delay to avoid flickering in stop-and-go traffic. Tap
