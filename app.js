@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13.5';
+const APP_VERSION = 'v2026.09.13.6';
 
 /* ============================== UTILITIES ============================== */
 
@@ -139,6 +139,7 @@ const state = {
     weatherFetchedAtMiles: null, weatherFetchedAt: 0,
     poiFetchedAtMiles: null, poiFetchedAt: 0,
     peaksFetchedAtMiles: null, peaksFetchedAt: 0,
+    currentTempF: null, currentTempUnit: null, // last known "Now (your location)" reading — see refreshWeatherAndAlerts()
   },
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
@@ -506,6 +507,13 @@ async function refreshWeatherAndAlerts(traveledMiles, totalMiles) {
         rows.push({ label: i === 0 ? 'Now (your location)' : `~${Math.round(sampleOffsets[i])} mi ahead`,
           temp: period.temperature, unit: period.temperatureUnit, forecast: period.shortForecast,
           wind: period.windSpeed, pop: (period.probabilityOfPrecipitation && period.probabilityOfPrecipitation.value) || 0 });
+        // Stashed so photos/videos/comments added around this time can be
+        // tagged with the temperature at the moment, without a separate
+        // lookup — see eventMetaLine() / addPhoto() / addComment().
+        if (i === 0) {
+          state.cache.currentTempF = period.temperature;
+          state.cache.currentTempUnit = period.temperatureUnit;
+        }
       } catch (e) { /* skip this point */ }
       try {
         const alerts = await nwsAlertsAt(pt.lat, pt.lon);
@@ -1447,6 +1455,8 @@ async function addPhoto(file) {
       mediaData: base64,
       mediaType,
       lat: state.loc.lat, lon: state.loc.lon,
+      elevationFt: currentElevationFt(),
+      tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       expiresAt, // read by cleanupExpiredMedia() below to auto-delete this doc ~90 days out
     });
@@ -1518,6 +1528,8 @@ async function addVideoLink(url) {
       url: trimmed,
       driveFileId: extractDriveFileId(trimmed),
       lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      elevationFt: currentElevationFt(),
+      tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     toast('Video link added to your trip.', 4000);
@@ -1536,6 +1548,8 @@ async function addComment(text) {
       type: 'comment',
       text: text.trim().slice(0, 500),
       lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      elevationFt: currentElevationFt(),
+      tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
     toast('Comment added.', 3000);
@@ -1544,14 +1558,36 @@ async function addComment(text) {
   }
 }
 
+// Builds the "📍 lat, lon · temp · elevation" bit shown next to the
+// timestamp on every comment/photo/video — whatever was known at the
+// moment it was added (see addPhoto()/addVideoLink()/addComment()).
+// Older events added before this feature won't have tempF/elevationFt on
+// their doc yet, so each piece is simply left out rather than shown as
+// blank/zero.
+function eventMetaLine(ev) {
+  const parts = [];
+  if (typeof ev.lat === 'number' && typeof ev.lon === 'number') {
+    parts.push(`📍 ${ev.lat.toFixed(4)}, ${ev.lon.toFixed(4)}`);
+  }
+  if (typeof ev.tempF === 'number') {
+    parts.push(`${Math.round(ev.tempF)}°${ev.tempUnit || 'F'}`);
+  }
+  if (typeof ev.elevationFt === 'number') {
+    parts.push(`⛰ ${ev.elevationFt.toLocaleString()} ft`);
+  }
+  return parts.join(' · ');
+}
+
 function renderEventItem(ev) {
   const when = (ev.createdAt && ev.createdAt.toDate)
     ? ev.createdAt.toDate().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     : 'just now';
+  const meta = eventMetaLine(ev);
+  const whenLine = meta ? `${when} · ${meta}` : when;
   if (ev.type === 'comment') {
     return `<div class="event-item"><div class="event-icon">💬</div><div>
       <div class="item-main">${escapeHtml(ev.text || '')}</div>
-      <div class="item-sub">${when}</div></div></div>`;
+      <div class="item-sub">${whenLine}</div></div></div>`;
   }
   if (ev.type === 'video') {
     const thumb = ev.driveFileId
@@ -1559,7 +1595,7 @@ function renderEventItem(ev) {
       : `<div class="event-icon">🎥</div>`;
     return `<a class="event-item" href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">${thumb}<div>
       <div class="item-main">🎥 Watch video ↗</div>
-      <div class="item-sub">${when}</div></div></a>`;
+      <div class="item-sub">${whenLine}</div></div></a>`;
   }
   const src = `data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}`;
   const filename = `trip-photo-${(ev.createdAt && ev.createdAt.toDate) ? ev.createdAt.toDate().getTime() : Date.now()}.jpg`;
@@ -1567,7 +1603,7 @@ function renderEventItem(ev) {
     <img src="${src}" class="event-thumb event-photo-img" alt="Trip photo — tap to enlarge" loading="lazy">
     <div class="event-item-body">
       <div class="item-main">📷 Photo</div>
-      <div class="item-sub">${when}</div>
+      <div class="item-sub">${whenLine}</div>
       <div class="event-item-actions">
         <a href="${src}" download="${filename}" class="ghost-btn small">⬇ Save</a>
         <button type="button" class="ghost-btn small share-photo-btn">📤 Share</button>
@@ -1583,14 +1619,19 @@ function makeEventMarker(ev) {
     html: `<div class="event-marker-icon">${iconEmoji}</div>`,
     iconSize: [26, 26], iconAnchor: [13, 24],
   });
+  const when = (ev.createdAt && ev.createdAt.toDate)
+    ? ev.createdAt.toDate().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : 'just now';
+  const meta = eventMetaLine(ev);
+  const metaLine = `<div style="font-size:11px;opacity:.7;margin-top:4px;">${when}${meta ? ' · ' + meta : ''}</div>`;
   let popupHtml;
   if (ev.type === 'comment') {
-    popupHtml = `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}`;
+    popupHtml = `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}${metaLine}`;
   } else if (ev.type === 'video') {
     const thumb = ev.driveFileId
       ? `<br><img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" style="max-width:200px;max-height:200px;" onerror="this.remove()">`
       : '';
-    popupHtml = `<b>🎥 Video</b>${thumb}<br><a href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">▶ Watch on Google Drive</a>`;
+    popupHtml = `<b>🎥 Video</b>${thumb}<br><a href="${escapeHtml(ev.url || '#')}" target="_blank" rel="noopener">▶ Watch on Google Drive</a>${metaLine}`;
   } else {
     const src = `data:${ev.mediaType || 'image/jpeg'};base64,${ev.mediaData}`;
     const filename = `trip-photo-${(ev.createdAt && ev.createdAt.toDate) ? ev.createdAt.toDate().getTime() : Date.now()}.jpg`;
@@ -1599,7 +1640,7 @@ function makeEventMarker(ev) {
       <div class="event-item-actions">
         <a href="${src}" download="${filename}" class="ghost-btn small">⬇ Save</a>
         <button type="button" class="ghost-btn small share-photo-btn">📤 Share</button>
-      </div>`;
+      </div>${metaLine}`;
   }
   return L.marker([ev.lat, ev.lon], { icon }).bindPopup(popupHtml);
 }
