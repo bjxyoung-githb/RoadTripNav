@@ -1841,9 +1841,9 @@ async function maybeRefreshWatchWeather(loc) {
   try {
     const periods = await nwsForecastAt(loc.lat, loc.lon);
     const cur = periods[0];
-    renderWatchWeather(`🌦 ${cur.temperature}°${cur.temperatureUnit} — ${cur.shortForecast} · wind ${cur.windSpeed}`);
+    renderWatchWeather(`Trip current location: 🌦 ${cur.temperature}°${cur.temperatureUnit} — ${cur.shortForecast} · wind ${cur.windSpeed}`);
   } catch (e) {
-    renderWatchWeather('Weather unavailable at this location (US only).');
+    renderWatchWeather('Trip current location: weather unavailable here (US only).');
   }
 }
 
