@@ -70,6 +70,7 @@ input:disabled { opacity: .6; }
 .hint.small { font-size: 11px; }
 .error-text { color: var(--bad); font-size: 13px; margin-top: 8px; min-height: 18px; }
 .muted { color: var(--muted); }
+.app-version { text-align: center; font-size: 11px; color: var(--muted); margin-top: 18px; opacity: .7; }
 
 /* Setup screen */
 .setup-screen { display: flex; align-items: flex-start; justify-content: center; padding: 20px 14px 60px; min-height: 100vh; }
