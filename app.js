@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13.7';
+const APP_VERSION = 'v2026.09.13.8';
 
 /* ============================== UTILITIES ============================== */
 
