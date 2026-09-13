@@ -313,7 +313,11 @@ free, no billing/Blaze plan needed:
            allow read: if request.auth != null;
            allow create: if request.auth != null
              && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
-           allow update, delete: if false;
+           allow update: if false;
+           allow delete: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid
+             && resource.data.expiresAt is timestamp
+             && resource.data.expiresAt < request.time;
          }
        }
      }
@@ -324,7 +328,10 @@ This rule means: only your own phone (recognized by a private key Firebase
 generates the first time you use this feature) can ever start a trip,
 update its location, or add photos/comments to it; anyone signed in (which
 happens automatically and invisibly, including for viewers) can read a trip
-they know the passcode for; nobody can overwrite or delete anything but you.
+they know the passcode for; nobody can overwrite anything, and the only
+thing anyone can ever delete is one of your own photos, and only once its
+90-day expiration date has actually passed (see 7d) — everything else is
+permanent unless you remove it yourself in the Firebase console.
 
 ### 7c. Upload and use it
 
@@ -342,33 +349,37 @@ is attached to your project at all, so there's nothing to be charged for.
 Each shared photo does count against that 1GB (compressed to roughly
 100–700KB each), which is still room for hundreds of photos across the trip.
 
-### 7d. Turn on automatic photo cleanup (one-time, optional but recommended)
+### 7d. Automatic photo cleanup
 
-Nothing in Firestore ever deletes itself on its own — without this step,
-every photo from every trip you ever share would sit there forever. The app
-already tags each photo it uploads with an `expiresAt` field set 90 days
-out; you just need to tell Firestore, once, to actually act on that field:
+Nothing in Firestore deletes itself on its own by default. Google Cloud
+does offer a built-in "TTL policy" feature for exactly this, but setting
+one up requires a permission level in Google Cloud Console (separate from
+the Firebase console) that isn't included by default even for the owner of
+a brand-new free project — so instead, this cleanup is built directly into
+the app, and needs nothing extra set up beyond the security rule in 7b
+above.
 
-1. In the Firebase console, open **Firestore Database** → look for a **TTL**
-   (sometimes labeled "Time-to-live policies") tab — it's usually next to
-   the **Indexes** tab.
-2. **Create policy** (or **Add policy**):
-   - Collection group: `events`
-   - Timestamp field: `expiresAt`
-3. Save/create it.
-
-That's the whole setup. From then on, Firestore quietly deletes each photo
-document roughly 90 days after it was added — no app code runs this, it
-happens even if the app is never opened again, and it doesn't require the
-paid Blaze plan (TTL deletions are a built-in Firestore feature and count
-as ordinary, free document deletes, well within the 20K/day free quota).
+Here's how it works: every photo you add gets tagged with an `expiresAt`
+field, 90 days out. Each time you open the app (at most once a day, so it's
+not re-checking constantly), it quietly looks back through the list of
+trips *this phone* has ever shared, and deletes any photo whose 90 days is
+up. This can only ever run from a phone that knows the private key
+Firebase generated for it when sharing first started (the same thing that
+lets it write to a trip in the first place) — nobody viewing your trips can
+trigger it, and it can't touch anyone else's data.
 
 **What this does and doesn't touch:**
 - Only **photos** expire this way (the large base64 image data). Comments
   and video links are tiny text and are kept forever.
 - The trip's route line, label, and passcode (the `trips/{pin}` document
-  itself) are never touched — only individual photo documents inside it.
+  itself) are never touched — only individual expired photo documents
+  inside it.
 - The **Saved legs** list on the setup screen ("Use as destination" for a
   previous address) is completely separate — it lives only in this
   phone's local storage, was never stored in Firestore, and is
   unaffected by any of this.
+- Because it tracks trips per-phone (in local storage), a trip shared from
+  a phone whose storage later gets cleared won't be revisited for
+  cleanup — it'll just sit there, same as before this feature existed.
+  That's a minor gap, not a risk: nothing is deleted incorrectly, some
+  old photos just don't get swept up automatically in that edge case.
