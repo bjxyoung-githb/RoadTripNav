@@ -856,6 +856,12 @@ async function onLocationUpdate() {
     } else {
       state.currentMarker.setLatLng([cur.lat, cur.lon]);
     }
+    // Keep the map centered on the driver as they move, unless they've
+    // manually dragged it to look around — see the dragstart handler and
+    // the "Recenter" button in initMap()/addRecenterControl().
+    if (state.followMe) {
+      state.map.panTo([cur.lat, cur.lon], { animate: true, duration: 0.5 });
+    }
   }
 
   if (!state.route) return;
@@ -977,6 +983,52 @@ function initMap() {
 
   state.mapFullscreen = false;
   addFullscreenToggleControl(state.map, () => state.mapFullscreen, toggleMapFullscreen);
+
+  // Auto-follow: the map recenters on your location as you drive (see
+  // onLocationUpdate()). Dragging the map to look around turns that off —
+  // Leaflet's 'dragstart' only fires for the user's own touch/mouse drag,
+  // never for the programmatic panTo() calls that follow mode itself makes —
+  // and the Recenter button turns it back on.
+  state.followMe = true;
+  addRecenterControl(
+    state.map,
+    (v) => { state.followMe = v; },
+    () => state.loc && [state.loc.lat, state.loc.lon],
+    (div) => { state.recenterBtnDiv = div; },
+  );
+  state.map.on('dragstart', () => {
+    if (state.followMe) {
+      state.followMe = false;
+      if (state.recenterBtnDiv) state.recenterBtnDiv.classList.remove('hidden');
+    }
+  });
+}
+
+// A small on-map button that appears once the map has been manually panned
+// away from whatever it was following — the driver's own location on the
+// main map, or the traveler's live position on a viewer's watch map (see
+// initWatchMap()). Tapping it snaps back and resumes auto-follow. Shared by
+// both maps via getFollowing/setFollowing/getTargetLatLng so each keeps its
+// own independent follow state.
+function addRecenterControl(map, setFollowing, getTargetLatLng, onDivReady) {
+  const RecenterControl = L.Control.extend({
+    options: { position: 'bottomright' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'leaflet-bar map-toggle-btn recenter-btn hidden');
+      div.innerText = '⌖ Recenter';
+      div.title = 'Re-center the map and resume auto-follow';
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.on(div, 'click', () => {
+        setFollowing(true);
+        div.classList.add('hidden');
+        const ll = getTargetLatLng();
+        if (ll) map.panTo(ll, { animate: true });
+      });
+      if (onDivReady) onDivReady(div);
+      return div;
+    },
+  });
+  return new RecenterControl().addTo(map);
 }
 
 // Shared by both the driver's own map and a viewer's watch map — a small
@@ -1803,6 +1855,24 @@ function initWatchMap() {
   state.watch.map = map;
   state.watch.fullscreen = false;
   addFullscreenToggleControl(map, () => state.watch.fullscreen, toggleWatchFullscreen);
+
+  // Same auto-follow behavior as the driver's own map: recenters on the
+  // traveler's live position as it updates, pauses if you drag to look
+  // around, and a Recenter button brings it back.
+  state.watch.followMe = true;
+  addRecenterControl(
+    map,
+    (v) => { state.watch.followMe = v; },
+    () => state.watch.liveMarker && state.watch.liveMarker.getLatLng(),
+    (div) => { state.watch.recenterBtnDiv = div; },
+  );
+  map.on('dragstart', () => {
+    if (state.watch.followMe) {
+      state.watch.followMe = false;
+      if (state.watch.recenterBtnDiv) state.watch.recenterBtnDiv.classList.remove('hidden');
+    }
+  });
+
   if (state.watch.trip) renderWatchTrip();
   if (state.watch.events) renderWatchEvents(state.watch.events);
 }
@@ -1835,6 +1905,9 @@ function renderWatchTrip() {
       state.watch.liveMarker.setLatLng(ll);
       state.watch.liveMarker.setIcon(icon);
       state.watch.liveMarker.setTooltipContent(tooltipText);
+    }
+    if (state.watch.followMe) {
+      map.panTo(ll, { animate: true, duration: 0.5 });
     }
     if (trip.active) maybeRefreshWatchWeather(trip.lastLocation);
   }
@@ -2053,6 +2126,10 @@ function wireSetupScreen() {
       document.getElementById('setupScreen').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
       if (!state.map) initMap();
+      // Fresh leg: start back in auto-follow, even if a previous leg was
+      // left manually panned away.
+      state.followMe = true;
+      if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
       drawRoute();
       onLocationUpdate();
       renderSharePanel();
