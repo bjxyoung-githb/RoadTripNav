@@ -84,9 +84,16 @@ The free tier gives you 2,000 routing requests and 1,000 geocoding
 5. Tap **Calculate Route**.
 6. Mount your phone like you would for any GPS app and go.
 
-Each day of the trip, just reopen the bookmark and enter that day's
-destination as a new leg — previous legs are saved on your phone and
-listed so you can quickly reselect a place you've already routed to.
+Once you arrive, tap **🏁 End This Leg / Plan Next Leg** (below the
+Miles/ETA/MPH row) to go back to the planning screen and enter the next
+stretch — previous legs are saved on your phone and listed so you can
+quickly reselect a place you've already routed to. Reloading the page in
+your browser has almost the same effect (it also drops you back at
+planning), but skip that if you have live sharing turned on for the leg
+you're ending — reloading abandons the share instead of cleanly marking it
+"ended," so anyone watching sees a "position may be stale" notice instead
+of a clean stop. Tapping **End This Leg** (or **Stop Sharing** on its own)
+avoids that.
 
 ## 3. What each part does
 
