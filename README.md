@@ -109,8 +109,12 @@ avoids that.
   the blue route-end marker, with a warning banner, so you know you'll need
   to finish the last stretch on foot or by eye rather than being silently
   routed somewhere else.
-- **Miles left / ETA / speed** — computed from your live position against
-  the route, refreshed continuously as your phone reports new GPS fixes.
+- **Miles left / ETA / speed / elevation** — computed from your live
+  position against the route, refreshed continuously as your phone reports
+  new GPS fixes. Elevation comes from OpenRouteService's own route data
+  (requested alongside the route itself, no extra lookups) rather than a
+  phone's GPS altitude reading, which tends to be unreliable or missing
+  entirely on most phones.
 - **Auto-follow** — the map recenters on your position as you drive, so you
   never have to nudge it back into view yourself. Drag the map to look
   around (check an upcoming turn, a nearby town, etc.) and auto-follow
@@ -160,9 +164,11 @@ avoids that.
   it to can open this same web address, tap **Watch someone else's shared
   trip**, enter the code, and see your route and a live-updating arrow at
   your position (rotated to your direction of travel, with your current
-  speed/heading and the weather right where you are), plus any
+  speed/heading, elevation, and the weather right where you are), plus any
   photos/videos/comments you add — all without installing anything or
-  creating an account. Use the 📷, 🎥, and 💬 buttons in this panel to drop
+  creating an account. A collapsible **⛰ Mountains Nearby** section on
+  their screen shows named peaks around your current position too, the
+  same way it does on your own dashboard. Use the 📷, 🎥, and 💬 buttons in this panel to drop
   a geotagged photo, video link, or comment; they show up as pins on both
   your map and every viewer's map. Photos are automatically
   shrunk/compressed and stored right in the app to keep this feature
@@ -170,8 +176,11 @@ avoids that.
   it with your phone's normal camera app, upload it to Google Drive (or
   wherever you like), set its sharing to "Anyone with the link," and paste
   that link in — the app never handles the video file itself, just the
-  link, which is why it stays free too. Tap **Stop Sharing** (or **New /
-  End Leg**) when you're done; the passcode stops working.
+  link, which is why it stays free too. While you're sharing, your own
+  screen (and only your screen — see section 7b) also shows a **👀 X
+  watching now** badge, so you know if anyone's actually got the trip open.
+  Tap **Stop Sharing** (or **New / End Leg**) when you're done; the
+  passcode stops working.
 
 ## 4. Troubleshooting
 
@@ -342,6 +351,13 @@ free, no billing/Blaze plan needed:
              && resource.data.expiresAt is timestamp
              && resource.data.expiresAt < request.time;
          }
+
+         match /viewers/{viewerId} {
+           allow read: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
+           allow create, update: if request.auth != null && request.auth.uid == viewerId;
+           allow delete: if request.auth != null && request.auth.uid == viewerId;
+         }
        }
      }
    }
@@ -354,7 +370,14 @@ happens automatically and invisibly, including for viewers) can read a trip
 they know the passcode for; nobody can overwrite anything, and the only
 thing anyone can ever delete is one of your own photos, and only once its
 90-day expiration date has actually passed (see 7d) — everything else is
-permanent unless you remove it yourself in the Firebase console.
+permanent unless you remove it yourself in the Firebase console. The new
+`viewers` block backs the "👀 X watching now" count you see while sharing
+(section 3): each viewer's phone can only ever write its own single
+presence marker there, and — this is the important part — only **your**
+phone (the trip's owner) is allowed to read that whole list at all, so
+there's no way for a viewer to see who else is watching, or even how many,
+by any means (this is enforced by Firebase itself, not just hidden in the
+app's screen).
 
 ### 7c. Upload and use it
 
