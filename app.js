@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13.6';
+const APP_VERSION = 'v2026.09.13.7';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1724,6 +1724,29 @@ function wireEventActions() {
   });
 }
 
+// A watch link is just this same page's own address with ?watch=PIN tacked
+// on — built from wherever the app is actually being loaded from right
+// now, rather than a hardcoded address, so it keeps working if this ever
+// moves to a different GitHub Pages URL or a custom domain. See
+// getAutoWatchPinFromUrl()/watchTripFromLink() for the receiving side.
+function buildShareUrl(pin) {
+  return `${window.location.origin}${window.location.pathname}?watch=${pin}`;
+}
+
+async function copyShareLink(url) {
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Link copied — paste it into a text or email.', 4000);
+  } catch (e) {
+    // Clipboard API can be unavailable (older browser, or blocked
+    // permission) — select the text in the link box so it can still be
+    // copied by hand as a fallback.
+    const input = document.getElementById('shareLinkInput');
+    if (input) { input.focus(); input.select(); input.setSelectionRange(0, 99999); }
+    toast("Couldn't auto-copy — the link is selected above, copy it by hand.", 5000);
+  }
+}
+
 function renderSharePanel() {
   const panel = document.getElementById('sharePanel');
   if (!panel) return;
@@ -1750,11 +1773,20 @@ function renderSharePanel() {
   const eventsHtml = sh.events.length
     ? sh.events.map(renderEventItem).join('')
     : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
+  const shareUrl = buildShareUrl(sh.pin);
   panel.innerHTML = `
     <div class="share-pin-box">
-      <div class="share-pin-lbl">Passcode to watch this trip</div>
-      <div class="share-pin-big">${sh.pin}</div>
-      <div class="hint">Give this 6-digit code to family — they open this same web address, tap "Watch someone else's shared trip," and enter it.</div>
+      <div class="share-pin-lbl">Link to watch this trip — just tap it, nothing to type</div>
+      <input id="shareLinkInput" class="share-link-input" type="text" readonly value="${escapeHtml(shareUrl)}">
+      <div class="share-link-actions">
+        <button id="shareLinkBtn" class="primary-btn small">📤 Share Link</button>
+        <button id="copyLinkBtn" class="ghost-btn small">📋 Copy</button>
+      </div>
+      <details class="pin-fallback">
+        <summary>Or give them the 6-digit passcode instead</summary>
+        <div class="share-pin-big">${sh.pin}</div>
+        <div class="hint">They'd open this same web address themselves, tap "Watch someone else's shared trip," and type this in — useful if the link above doesn't work for some reason.</div>
+      </details>
       <div id="viewerCountBadge" class="viewer-count-badge">👀 ${sh.viewerCount || 0} watching now</div>
     </div>
     <div class="share-actions">
@@ -1777,6 +1809,22 @@ function renderSharePanel() {
       <button id="commentSendBtn" class="ghost-btn small">Send</button>
     </div>
     <div class="event-list">${eventsHtml}</div>`;
+
+  document.getElementById('shareLinkInput').onclick = (e) => e.target.select();
+  document.getElementById('shareLinkBtn').onclick = async () => {
+    // On a phone, this opens the normal share sheet (Messages, email,
+    // whatever they've got) with the link pre-filled — the closest thing
+    // to "just send it" for someone who isn't comfortable copy/pasting.
+    // Not every browser offers it (mainly a desktop-browser gap), so fall
+    // back to copying the link there instead.
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Follow my road trip', text: 'Watch my trip live:', url: shareUrl }); }
+      catch (e) { /* user backed out of the share sheet — not an error */ }
+    } else {
+      copyShareLink(shareUrl);
+    }
+  };
+  document.getElementById('copyLinkBtn').onclick = () => copyShareLink(shareUrl);
 
   document.getElementById('addPhotoBtn').onclick = () => {
     document.getElementById('photoChoiceRow').classList.toggle('hidden');
@@ -1920,6 +1968,40 @@ function wireWatchScreen() {
     watchTrip(pin);
   });
   pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') goBtn.click(); });
+}
+
+// Reads a ?watch=123456 passcode off the page's own URL — the other half
+// of the shareable link built by buildShareUrl(). Returns null if there's
+// no such parameter, or it doesn't look like a real passcode (so a
+// mistyped/garbled link falls back to the normal setup screen instead of
+// erroring out).
+function getAutoWatchPinFromUrl() {
+  const pin = (new URLSearchParams(window.location.search).get('watch') || '').trim();
+  return /^\d{4,8}$/.test(pin) ? pin : null;
+}
+
+// Called once at startup when the page was opened via a shared watch link
+// (see getAutoWatchPinFromUrl()) — jumps straight past the setup screen
+// and the passcode-entry step into the live trip view, which is the whole
+// point: someone who isn't comfortable with apps just taps the link their
+// family member sent and is watching, no typing required.
+async function watchTripFromLink(pin) {
+  document.getElementById('setupScreen').classList.add('hidden');
+  document.getElementById('watchScreen').classList.remove('hidden');
+  document.getElementById('watchPinEntry').classList.add('hidden');
+  document.getElementById('watchLive').classList.remove('hidden');
+  document.getElementById('watchPinInput').value = pin;
+  renderWatchStatus('Connecting…');
+  await watchTrip(pin);
+  // watchTrip() only shows its errors in #watchError, which lives inside
+  // the passcode-entry panel we just hid — if it failed (bad/expired
+  // passcode), reveal that panel so the error is actually visible, with
+  // the passcode from the link already filled in in case it just needs a
+  // retry.
+  if (document.getElementById('watchError').textContent) {
+    document.getElementById('watchPinEntry').classList.remove('hidden');
+    document.getElementById('watchLive').classList.add('hidden');
+  }
 }
 
 async function watchTrip(pin) {
@@ -2545,7 +2627,18 @@ function init() {
   wireSharing();
   wireWatchScreen();
   wireEventActions();
-  startLocationSource();
+
+  const linkedPin = getAutoWatchPinFromUrl();
+  if (linkedPin) {
+    // Someone tapped a shared watch link — go straight to watching, and
+    // skip asking this browser for ITS OWN location. They only came here
+    // to look at someone else's trip, so a location-permission prompt at
+    // this point would just be confusing (and pointless, since a pure
+    // viewer's own position is never used for anything).
+    watchTripFromLink(linkedPin);
+  } else {
+    startLocationSource();
+  }
   cleanupExpiredMedia(); // fire-and-forget; never blocks startup
 }
 
