@@ -74,14 +74,32 @@ function toast(msg, ms) {
 const LS_SETTINGS = 'rtnav_settings_v1';
 const LS_TRIP = 'rtnav_trip_v1';
 
-// How long a shared photo's image data lives in Firestore before Firestore's
-// own TTL policy auto-deletes it (see README.md section 7 for the one-time
-// console setup). Only photo events get this field — comments and video
-// links (which just hold a small Google Drive URL, not the video itself)
-// are lightweight and never expire. This never touches the separate,
-// on-device "Saved legs" list used for "Use as destination" — that data
-// lives only in this browser's local storage, not Firestore.
+// How long a shared photo's image data lives in Firestore before the app's
+// own cleanup routine (see cleanupExpiredMedia() below) deletes it. Only
+// photo events get this field — comments and video links (which just hold
+// a small Google Drive URL, not the video itself) are lightweight and never
+// expire. This never touches the separate, on-device "Saved legs" list used
+// for "Use as destination" — that data lives only in this browser's local
+// storage, not Firestore.
 const MEDIA_TTL_DAYS = 90;
+
+// This phone's own list of trips it has ever started sharing — just enough
+// (pin + when) to let cleanupExpiredMedia() know which trips to check back
+// on later for expired photos. Small and self-capped; not sensitive data.
+const LS_OWN_TRIPS = 'rtnav_own_trips_v1';
+const LS_LAST_MEDIA_CLEANUP = 'rtnav_last_media_cleanup_v1';
+const MEDIA_CLEANUP_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000; // run at most ~once/day
+
+function loadOwnTrips() {
+  try { return JSON.parse(localStorage.getItem(LS_OWN_TRIPS) || '[]'); }
+  catch (e) { return []; }
+}
+function rememberOwnTrip(pin) {
+  const list = loadOwnTrips();
+  list.push({ pin, startedAt: Date.now() });
+  while (list.length > 100) list.shift(); // cap growth; this is a lot of trips
+  localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(list));
+}
 
 function loadSettings() {
   const defaults = {
@@ -1197,6 +1215,7 @@ async function startSharing() {
     state.share.ownerUid = uid;
     state.share.lastPushAt = Date.now();
     state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+    rememberOwnTrip(pin);
     subscribeOwnEvents(pin);
     renderSharePanel();
     toast('Sharing started — passcode ' + pin, 6000);
@@ -1308,11 +1327,49 @@ async function addPhoto(file) {
       mediaType,
       lat: state.loc.lat, lon: state.loc.lon,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-      expiresAt, // Firestore TTL policy (see README section 7) auto-deletes this document ~90 days out
+      expiresAt, // read by cleanupExpiredMedia() below to auto-delete this doc ~90 days out
     });
     toast('Photo added to your trip.', 4000);
   } catch (e) {
     toast("Couldn't add photo: " + e.message, 6000);
+  }
+}
+
+// Stands in for a server-side TTL policy (Google Cloud Console's TTL setup
+// needs a permission level this Google account doesn't have — see README
+// section 7d). Runs at most once a day, from whichever phone has ever
+// started sharing a trip: looks back through this phone's own past trips
+// (see rememberOwnTrip()) and deletes any photo whose expiresAt has passed.
+// Comments and video links are left alone (they're tiny, not "large
+// media"), and a trip's route/label/passcode document is never touched —
+// only individual expired photo documents inside it.
+async function cleanupExpiredMedia() {
+  if (!firebaseConfigured()) return;
+  const last = Number(localStorage.getItem(LS_LAST_MEDIA_CLEANUP) || 0);
+  const now = Date.now();
+  if (now - last < MEDIA_CLEANUP_MIN_INTERVAL_MS) return;
+  try {
+    const { db } = await initFirebase();
+    const trips = loadOwnTrips();
+    for (const t of trips) {
+      try {
+        const snap = await db.collection('trips').doc(t.pin).collection('events')
+          .where('type', '==', 'photo').get();
+        const deletions = [];
+        snap.forEach((doc) => {
+          const exp = doc.data().expiresAt;
+          const expMs = exp && typeof exp.toMillis === 'function' ? exp.toMillis() : null;
+          if (expMs && expMs <= now) deletions.push(doc.ref.delete());
+        });
+        if (deletions.length) await Promise.all(deletions);
+      } catch (e) {
+        // Best effort, one trip at a time — an old/already-cleared trip
+        // shouldn't stop the rest of the list from being checked.
+      }
+    }
+    localStorage.setItem(LS_LAST_MEDIA_CLEANUP, String(now));
+  } catch (e) {
+    // Best effort — cleanup never interrupts normal use of the app.
   }
 }
 
@@ -2130,6 +2187,7 @@ function init() {
   wireWatchScreen();
   wireEventActions();
   startLocationSource();
+  cleanupExpiredMedia(); // fire-and-forget; never blocks startup
 }
 
 document.addEventListener('DOMContentLoaded', init);
