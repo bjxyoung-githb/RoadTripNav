@@ -118,9 +118,12 @@ input:disabled { opacity: .6; }
 }
 .dashboard.map-fullscreen .turn-banner,
 .dashboard.map-fullscreen .stats-row,
+.dashboard.map-fullscreen .end-leg-btn,
 .dashboard.map-fullscreen .accordion {
   display: none;
 }
+
+.end-leg-btn { width: calc(100% - 24px); margin: 4px 12px 10px; }
 
 .turn-banner {
   background: var(--accent); color: white; padding: 14px 16px;
@@ -136,7 +139,6 @@ input:disabled { opacity: .6; }
 .stat:last-of-type { border-right: none; }
 .stat-val { font-size: 22px; font-weight: 800; line-height: 1.1; }
 .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
-#endLegBtn { margin-left: 8px; flex-shrink: 0; }
 
 .accordion { padding: 10px 12px 40px; }
 details {
