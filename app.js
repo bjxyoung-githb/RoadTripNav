@@ -1524,6 +1524,10 @@ function renderSharePanel() {
       <button id="addCommentBtn" class="ghost-btn small">💬 Comment</button>
       <button id="stopSharingBtn" class="ghost-btn small">Stop Sharing</button>
     </div>
+    <div id="photoChoiceRow" class="comment-input-row hidden">
+      <button id="takePhotoBtn" class="ghost-btn small">📷 Take Photo</button>
+      <button id="choosePhotoBtn" class="ghost-btn small">🖼 Choose from Gallery</button>
+    </div>
     <div id="videoLinkInputRow" class="comment-input-row hidden">
       <input id="videoLinkTextInput" type="url" placeholder="Paste Google Drive share link…" maxlength="500">
       <button id="videoLinkSendBtn" class="ghost-btn small">Add</button>
@@ -1535,7 +1539,17 @@ function renderSharePanel() {
     </div>
     <div class="event-list">${eventsHtml}</div>`;
 
-  document.getElementById('addPhotoBtn').onclick = () => document.getElementById('mediaFileInput').click();
+  document.getElementById('addPhotoBtn').onclick = () => {
+    document.getElementById('photoChoiceRow').classList.toggle('hidden');
+  };
+  document.getElementById('takePhotoBtn').onclick = () => {
+    document.getElementById('photoChoiceRow').classList.add('hidden');
+    document.getElementById('mediaFileInputCamera').click();
+  };
+  document.getElementById('choosePhotoBtn').onclick = () => {
+    document.getElementById('photoChoiceRow').classList.add('hidden');
+    document.getElementById('mediaFileInputGallery').click();
+  };
   document.getElementById('addVideoBtn').onclick = () => {
     document.getElementById('videoLinkInputRow').classList.toggle('hidden');
     document.getElementById('videoLinkHint').classList.toggle('hidden');
@@ -1564,11 +1578,13 @@ function renderSharePanel() {
 }
 
 function wireSharing() {
-  document.getElementById('mediaFileInput').addEventListener('change', (e) => {
+  const handleMediaFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (file) addPhoto(file);
     e.target.value = '';
-  });
+  };
+  document.getElementById('mediaFileInputCamera').addEventListener('change', handleMediaFile);
+  document.getElementById('mediaFileInputGallery').addEventListener('change', handleMediaFile);
   renderSharePanel();
 }
 
