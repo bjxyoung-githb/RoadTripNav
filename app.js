@@ -1,6 +1,12 @@
 (function () {
 'use strict';
 
+// Bump this string with every update shipped. Shown in Settings and at the
+// bottom of the planning screen — mainly so a quick glance (in an incognito
+// tab, say) can confirm a phone is actually running the latest upload
+// rather than a cached older copy.
+const APP_VERSION = 'v2026.09.13';
+
 /* ============================== UTILITIES ============================== */
 
 const MI_PER_METER = 0.000621371;
@@ -2255,7 +2261,14 @@ function wireEndLeg() {
 
 /* ============================== INIT ============================== */
 
+function renderAppVersion() {
+  document.querySelectorAll('.app-version-slot').forEach((el) => {
+    el.textContent = `Road Trip Navigator ${APP_VERSION}`;
+  });
+}
+
 function init() {
+  renderAppVersion();
   wireSettingsModal();
   wireSetupScreen();
   wireEndLeg();
