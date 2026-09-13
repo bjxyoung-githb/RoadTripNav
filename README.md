@@ -175,6 +175,12 @@ avoids that.
 
 ## 4. Troubleshooting
 
+- **Checking you're on the latest version** — a small "Road Trip Navigator
+  vYYYY.MM.DD" line now appears at the bottom of the planning screen and in
+  Settings. After uploading updated files, check this against the version
+  mentioned in whatever update you just applied — if it still shows the old
+  date, that's a stale cached copy, not a failed upload (see the caching
+  entries below).
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
