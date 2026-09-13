@@ -125,7 +125,15 @@
     <div id="watchLive" class="hidden">
       <div id="watchStatus" class="watch-status muted">Connecting…</div>
       <div id="watchWeather" class="watch-weather muted"></div>
+      <div id="watchElevation" class="watch-weather muted"></div>
       <div id="watchMap" class="watch-map"></div>
+
+      <details>
+        <summary>⛰ Mountains Nearby</summary>
+        <div id="watchPeaksPanel" class="panel-body muted">Loading…</div>
+        <div class="hint small">Named peaks near the traveler's location by straight-line distance — not a guaranteed line-of-sight view.</div>
+      </details>
+
       <div id="watchEvents" class="watch-events"></div>
       <button id="watchBackBtn" class="ghost-btn" style="width:100%;margin-top:14px;">← Back</button>
     </div>
@@ -153,6 +161,10 @@
     <div class="stat">
       <div class="stat-val" id="statSpeed">–</div>
       <div class="stat-lbl">MPH</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val stat-val-sm" id="statElevation">–</div>
+      <div class="stat-lbl">Elevation</div>
     </div>
   </div>
 
