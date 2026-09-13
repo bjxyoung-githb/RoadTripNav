@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13.4';
+const APP_VERSION = 'v2026.09.13.5';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1366,7 +1366,13 @@ function subscribeViewerCount(pin) {
         if (now - seenAt < 90 * 1000) count++;
       });
       sh.viewerCount = count;
-      renderSharePanel();
+      // Update just the badge's text in place rather than calling
+      // renderSharePanel() — that rebuilds the panel's entire innerHTML,
+      // which would wipe out (and drop focus from) anything you're in the
+      // middle of typing in the comment/video-link box every time this
+      // fires (roughly every 30s per active viewer).
+      const badge = document.getElementById('viewerCountBadge');
+      if (badge) badge.textContent = `👀 ${sh.viewerCount} watching now`;
     }, () => { /* best effort — leave last known count showing */ });
 }
 
@@ -1692,6 +1698,14 @@ function renderSharePanel() {
     document.getElementById('startSharingBtn').onclick = startSharing;
     return;
   }
+  // A new photo/comment/video arriving from subscribeOwnEvents() rebuilds
+  // this whole panel below, same as it always has — but that would also
+  // wipe out (and un-focus) anything you're mid-typing in the comment or
+  // video-link box when it happens to land at the wrong moment. Capture
+  // and restore that in-progress state around the rebuild so typing never
+  // gets silently lost.
+  const preserved = captureShareInputState();
+
   const eventsHtml = sh.events.length
     ? sh.events.map(renderEventItem).join('')
     : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
@@ -1700,7 +1714,7 @@ function renderSharePanel() {
       <div class="share-pin-lbl">Passcode to watch this trip</div>
       <div class="share-pin-big">${sh.pin}</div>
       <div class="hint">Give this 6-digit code to family — they open this same web address, tap "Watch someone else's shared trip," and enter it.</div>
-      <div class="viewer-count-badge">👀 ${sh.viewerCount || 0} watching now</div>
+      <div id="viewerCountBadge" class="viewer-count-badge">👀 ${sh.viewerCount || 0} watching now</div>
     </div>
     <div class="share-actions">
       <button id="addPhotoBtn" class="ghost-btn small">📷 Add Photo</button>
@@ -1759,6 +1773,63 @@ function renderSharePanel() {
   document.getElementById('commentTextInput').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') document.getElementById('commentSendBtn').click();
   });
+
+  restoreShareInputState(preserved);
+}
+
+// Snapshot of whatever's currently open/typed in the Share panel's
+// comment/video-link boxes, taken right before renderSharePanel() replaces
+// the panel's innerHTML wholesale (which would otherwise silently discard
+// it — including mid-keystroke, since the old input element is destroyed
+// and a fresh empty one takes its place).
+function captureShareInputState() {
+  const commentInput = document.getElementById('commentTextInput');
+  const videoInput = document.getElementById('videoLinkTextInput');
+  const commentRow = document.getElementById('commentInputRow');
+  const videoRow = document.getElementById('videoLinkInputRow');
+  const photoRow = document.getElementById('photoChoiceRow');
+  return {
+    commentValue: commentInput ? commentInput.value : '',
+    commentOpen: !!(commentRow && !commentRow.classList.contains('hidden')),
+    commentFocused: document.activeElement === commentInput,
+    commentSelStart: commentInput ? commentInput.selectionStart : null,
+    commentSelEnd: commentInput ? commentInput.selectionEnd : null,
+    videoValue: videoInput ? videoInput.value : '',
+    videoOpen: !!(videoRow && !videoRow.classList.contains('hidden')),
+    videoFocused: document.activeElement === videoInput,
+    videoSelStart: videoInput ? videoInput.selectionStart : null,
+    videoSelEnd: videoInput ? videoInput.selectionEnd : null,
+    photoOpen: !!(photoRow && !photoRow.classList.contains('hidden')),
+  };
+}
+
+// Re-applies whatever captureShareInputState() saved, onto the freshly
+// rebuilt panel — reopens the same row, puts the typed text back, and
+// restores focus/cursor position so typing can continue exactly where it
+// left off, uninterrupted.
+function restoreShareInputState(s) {
+  if (!s) return;
+  const commentInput = document.getElementById('commentTextInput');
+  const videoInput = document.getElementById('videoLinkTextInput');
+  const commentRow = document.getElementById('commentInputRow');
+  const videoRow = document.getElementById('videoLinkInputRow');
+  const videoHint = document.getElementById('videoLinkHint');
+  const photoRow = document.getElementById('photoChoiceRow');
+  if (s.commentOpen && commentRow) commentRow.classList.remove('hidden');
+  if (s.videoOpen) {
+    if (videoRow) videoRow.classList.remove('hidden');
+    if (videoHint) videoHint.classList.remove('hidden');
+  }
+  if (s.photoOpen && photoRow) photoRow.classList.remove('hidden');
+  if (commentInput && s.commentValue) commentInput.value = s.commentValue;
+  if (videoInput && s.videoValue) videoInput.value = s.videoValue;
+  if (s.commentFocused && commentInput) {
+    commentInput.focus();
+    if (s.commentSelStart != null) commentInput.setSelectionRange(s.commentSelStart, s.commentSelEnd);
+  } else if (s.videoFocused && videoInput) {
+    videoInput.focus();
+    if (s.videoSelStart != null) videoInput.setSelectionRange(s.videoSelStart, s.videoSelEnd);
+  }
 }
 
 function wireSharing() {
