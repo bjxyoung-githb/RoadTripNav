@@ -118,6 +118,21 @@ avoids that.
   the blue route-end marker, with a warning banner, so you know you'll need
   to finish the last stretch on foot or by eye rather than being silently
   routed somewhere else.
+- **Route preference (back roads vs. interstate)** — in Settings, choose
+  **Fastest route** (the old default — highways/interstates used as
+  needed), **Prefer back roads if it's not much slower** (calculates both
+  the fastest route and an all-back-roads route, and uses the back-roads
+  one as long as it's within however many extra minutes you set — a toast
+  tells you which way it went and by how much), or **Always take back
+  roads, no matter the time** (avoids limited-access highways/interstates
+  entirely). This applies to Calculate Route, automatic off-route
+  rerouting, and tap-anywhere-for-ETA, so however you've set it, everything
+  routes that way. It can't detect a specific slow left-lane camper — there's
+  no free live-traffic-lane data source for that — but staying off the
+  interstate generally means an oncoming lane is available to legally pass
+  when the way ahead is clear, which sidesteps that annoyance structurally.
+  If no back-roads-only path exists for some stretch (rare), it quietly
+  falls back to the regular route rather than failing.
 - **Stopping for the night mid-leg** — you don't need to do anything
   special to stop driving partway through a leg (say, an overnight hotel
   stop before reaching that day's actual destination). If your phone's
@@ -370,6 +385,14 @@ avoids that.
   causes as any routing error (API key issue, or that spot genuinely isn't
   reachable by road, like the middle of a lake or a private tract with no
   mapped access).
+- **Route still used the interstate even with a back-roads setting on** —
+  check Settings → Route preference actually saved (it resets to "Fastest
+  route" only if you've never set it). With "Prefer back roads if it's not
+  much slower," a toast after each route calculation says whether it picked
+  back roads or the fastest route and why — if it says the back-roads route
+  was too much slower, raise the extra-minutes tolerance in Settings. With
+  either back-roads option, a short unavoidable stretch of highway can still
+  appear if that's genuinely the only road available there.
 - **A viewer's tap-for-ETA looks off, or says the tap is far from the
   route** — expected once the tap lands well away from your route line;
   viewers estimate off the route data already shared with them rather than
