@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.7';
+const APP_VERSION = 'v2026.09.14.9';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1624,7 +1624,11 @@ function subscribeViewerMessages(pin) {
         if (wasAlreadyLoaded) announceViewerMessage(msg);
       });
       if (snap.docChanges().length) renderViewerMessages();
-    }, () => { /* best effort — messages resume once the connection is back */ });
+    }, (e) => toast('Messages sync error: ' + e.message, 8000));
+    // ^ surfaced rather than swallowed on purpose: a Firestore listener that
+    // errors (e.g. a permissions problem) stops dead and never fires again,
+    // so silently ignoring it here would look exactly like "no messages,
+    // ever" with no clue why — see README section 4 if this shows up.
 }
 
 function renderViewerMessages() {
@@ -2281,6 +2285,16 @@ async function sendViewerMessage() {
   const text = (msgInput.value || '').trim().slice(0, 300);
   if (!text) { msgInput.focus(); return; }
   if (!state.watch.pin) { toast("Not connected to a trip right now.", 3000); return; }
+  // Catch a stopped/stale trip here with a plain-English message instead of
+  // letting it fall through to Firestore, which would just deny the write
+  // (this trip existing but no longer "active" is exactly what the
+  // security rules' create check on messages also requires) and hand back
+  // a generic "Missing or insufficient permissions" that means nothing to
+  // whoever's actually trying to send a message to a family member.
+  if (!state.watch.trip || state.watch.trip.active === false) {
+    toast("This trip isn't active right now — ask for a fresh link.", 5000);
+    return;
+  }
   saveViewerName(name);
   sendBtn.disabled = true;
   try {
