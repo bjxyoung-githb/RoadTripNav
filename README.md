@@ -359,6 +359,29 @@ avoids that.
 - **A viewer gets "Couldn't send: Missing or insufficient permissions"
   sending a message** — your Firestore rules need the new `messages` block
   added; see section 7b's note about updating existing rules.
+- **A viewer's message shows as sent, but your own screen still says "No
+  messages yet"** — two different things can cause this, and they look
+  identical from the sender's side:
+  - Your Firestore rules are fine but out of date in one specific way: the
+    viewer's *write* succeeded, but your phone's *read* of that same
+    collection is being denied, so it never reaches your screen at all.
+    You should now see a **"Messages sync error: …"** toast on your own
+    screen when this happens (an earlier version of this feature swallowed
+    that error silently, which is exactly what made this confusing to
+    track down in the first place) — if it names a permissions error,
+    re-paste the full rules block from section 7b and **Publish**.
+  - More likely: the message was sent to a share link/passcode that wasn't
+    the *current* one — for example, sharing got stopped and restarted
+    (a fresh **Start Sharing** always issues a new passcode/link) between
+    when the viewer got their link and when they actually sent something,
+    so it landed in a trip nobody's listening to anymore. The rules now
+    require a trip to still be **active** to accept a new message, so this
+    case fails with a clear **"This trip isn't active right now — ask for
+    a fresh link"** on the sender's screen instead of silently vanishing —
+    but that only takes effect once you've re-published the rules block
+    from section 7b with that condition included. The fix either way: make
+    sure whoever's testing is using the passcode/link currently showing on
+    your own Share & Trip Log panel, not one from an earlier test.
 - **A message showed up in the panel but wasn't read aloud** — either voice
   guidance itself is off (check the 🔊/🔇 icon in the top bar), or it was
   still busy reading an actual turn instruction when the message arrived
@@ -496,6 +519,7 @@ free, no billing/Blaze plan needed:
              && (get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid
                  || request.auth.uid == resource.data.senderUid);
            allow create: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.active == true
              && request.resource.data.senderUid == request.auth.uid
              && request.resource.data.text is string
              && request.resource.data.text.size() > 0
@@ -519,6 +543,15 @@ free, no billing/Blaze plan needed:
    your existing trip data, photos, and viewers are untouched. Until you do
    this, viewers will get a permissions error trying to send a message —
    everything else in the app keeps working normally either way.
+
+   **Already published the `messages` block once, but messages sent to it
+   never showed up on your screen?** The `create` rule above got one more
+   condition added since — it now also requires the trip to still be
+   `active`, so a message sent to a stopped/stale share link fails loudly
+   (the sender sees an error) instead of silently writing into a trip
+   nobody's listening to anymore, which looked exactly like "it sent, but
+   you never got it." Re-paste and re-publish the block above to pick that
+   up.
 
 This rule means: only your own phone (recognized by a private key Firebase
 generates the first time you use this feature) can ever start a trip,
