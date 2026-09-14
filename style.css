@@ -55,6 +55,23 @@ button { cursor: pointer; font-family: inherit; }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
 .modal-actions .primary-btn, .modal-actions .ghost-btn { width: auto; flex: 1; }
 
+/* Context-sensitive help */
+.help-btn {
+  background: rgba(143,162,199,.15); border: 1px solid var(--panel-border); color: var(--muted);
+  width: 20px; height: 20px; min-width: 20px; border-radius: 50%; font-size: 11px;
+  font-weight: 700; display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; margin-left: 6px; line-height: 1; flex-shrink: 0; vertical-align: middle;
+}
+.help-btn:active { background: rgba(255,255,255,.15); }
+h1 .help-btn, h3 .help-btn { vertical-align: 2px; }
+.modal-card.help-card { max-width: 480px; }
+.modal-card.help-card #helpBody p { line-height: 1.5; font-size: 14px; margin: 0 0 10px; }
+.modal-card.help-card #helpBody ul { padding-left: 20px; margin: 8px 0; }
+.modal-card.help-card #helpBody li { margin-bottom: 6px; font-size: 14px; line-height: 1.45; }
+.modal-card.help-card #helpBody code { background: #0d1526; border: 1px solid var(--panel-border); border-radius: 4px; padding: 1px 5px; font-size: 13px; }
+.section-title-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin: 14px 0 6px; }
+.small-label { font-weight: 600; }
+
 label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
 input[type=text], input[type=number] {
   width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--panel-border);
@@ -126,6 +143,21 @@ input:disabled { opacity: .6; }
 
 .end-leg-btn { width: calc(100% - 24px); margin: 4px 12px 10px; }
 
+/* Messages from family — driver side, see subscribeViewerMessages() */
+.viewer-messages-panel {
+  background: #17233d; border-bottom: 1px solid var(--panel-border);
+  padding: 10px 12px; max-height: 160px; overflow-y: auto;
+}
+.viewer-messages-list { display: flex; flex-direction: column; gap: 8px; }
+.viewer-message-empty { font-size: 13px; padding: 2px 0; }
+.viewer-message { background: #101a30; border-radius: 8px; padding: 8px 10px; }
+.viewer-message-meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.viewer-message-text { font-size: 14px; line-height: 1.35; word-break: break-word; }
+
+/* Send-a-message box — viewer/watch side, see sendViewerMessage() */
+.viewer-message-compose { margin: 4px 0 2px; }
+.viewer-message-compose input[type=text] { margin: 0; }
+
 .turn-banner {
   background: var(--accent); color: white; padding: 14px 16px;
 }
@@ -140,6 +172,7 @@ input:disabled { opacity: .6; }
 .stat:last-of-type { border-right: none; }
 .stat-val { font-size: 22px; font-weight: 800; line-height: 1.1; }
 .stat-val-sm { font-size: 17px; }
+.stat-eta-date { font-size: 11px; color: var(--accent); font-weight: 700; margin-top: 1px; min-height: 13px; }
 .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
 
 .accordion { padding: 10px 12px 40px; }
@@ -287,6 +320,8 @@ details[open] summary::after { transform: rotate(90deg); }
 
 /* Watch (viewer) screen */
 .watch-status { font-size: 13px; margin: 10px 0 2px; min-height: 18px; }
+.watch-status-row { display: flex; align-items: center; gap: 6px; }
+.watch-status-row .watch-status { margin: 0; flex: 1; }
 .watch-weather { font-size: 13px; margin: 0 0 8px; min-height: 16px; }
 .watch-map {
   height: 46vh; min-height: 240px; width: 100%; border-radius: 10px;
@@ -321,6 +356,21 @@ details[open] summary::after { transform: rotate(90deg); }
   border-radius: 6px; white-space: nowrap; user-select: none;
 }
 .map-toggle-btn:hover { background: #17233d; }
+
+/* Auto-update-check banner — see checkForAppUpdate()/showUpdateBanner() */
+.update-banner {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5000;
+  background: #123a24; border-top: 2px solid var(--good); color: var(--text);
+  padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom));
+  display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+  gap: 10px 14px; font-size: 13px; text-align: center;
+}
+.update-banner button {
+  border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px;
+  font-weight: 700; cursor: pointer; flex-shrink: 0;
+}
+.update-banner #updateReloadBtn { background: var(--good); color: #04210f; }
+.update-banner .update-later-btn { background: transparent; border: 1px solid var(--panel-border); color: var(--text); font-weight: 400; }
 .recenter-btn {
   background: var(--accent); color: white; border-color: var(--accent);
   box-shadow: 0 2px 10px rgba(59,130,246,.5);
