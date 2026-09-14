@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.9';
+const APP_VERSION = 'v2026.09.14.11';
 
 /* ============================== UTILITIES ============================== */
 
@@ -194,7 +194,7 @@ const state = {
   etaTapMarker: null, // marker for the driver-side tap-anywhere-for-ETA popup — see handleMapTapForEta()
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -1618,6 +1618,7 @@ function subscribeViewerMessages(pin) {
           id: change.doc.id,
           text: d.text || '',
           senderName: d.senderName || 'Family',
+          senderUid: d.senderUid || null, // who to target if you tap Reply — see startVoiceReply()
           createdAt: (d.createdAt && typeof d.createdAt.toMillis === 'function') ? d.createdAt.toMillis() : Date.now(),
         };
         sh.messages.push(msg);
@@ -1644,9 +1645,13 @@ function renderViewerMessages() {
   }
   list.innerHTML = msgs.slice().reverse().slice(0, 30).map((m) => {
     const when = new Date(m.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    const replyBtn = m.senderUid
+      ? `<button class="reply-btn" data-uid="${escapeHtml(m.senderUid)}" data-name="${escapeHtml(m.senderName)}">🎤 Reply</button>`
+      : ''; // older messages sent before senderUid was recorded have no one to target
     return `<div class="viewer-message">
       <div class="viewer-message-meta"><b>${escapeHtml(m.senderName)}</b> · ${when}</div>
       <div class="viewer-message-text">${escapeHtml(m.text)}</div>
+      ${replyBtn}
     </div>`;
   }).join('');
 }
@@ -1667,6 +1672,109 @@ function announceViewerMessage(msg, attemptsLeft) {
     return;
   }
   speak(`Message from ${msg.senderName}: ${msg.text}`);
+}
+
+/* ============================== VOICE REPLY (driver → one viewer) ============================== */
+// The 🎤 Reply button on each message in the Messages from Family panel —
+// tap it, speak, and it goes straight to that one sender (not everyone
+// watching). Deliberately hands-free end to end: no text box to type into
+// or accidentally wipe by re-rendering mid-keystroke (the same class of bug
+// fixed earlier for the Share panel's comment box — see
+// captureShareInputState()) — there's simply nothing typed to lose, since
+// the whole flow is tap → speak → sent, with a spoken confirmation so you
+// don't need to look at the screen to know it went through.
+//
+// Uses the browser's built-in SpeechRecognition — free, no server, same
+// zero-cost philosophy as everything else here — but support and
+// reliability vary a lot by browser. Chrome (Android or desktop) is solid;
+// Safari's support has historically been inconsistent and can need a
+// network connection to actually transcribe, which may not always be
+// there on the road. Where it's not available at all, this falls back to
+// a quick one-line text prompt instead, so there's always *some* way to
+// reply.
+
+function speechRecognitionSupported() {
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+let activeVoiceReplyRecognition = null; // only one reply capture in flight at a time
+
+function startVoiceReply(toUid, toName) {
+  if (!toUid) { toast("Can't tell who to reply to from that message.", 4000); return; }
+  const name = toName || 'Family';
+
+  if (!speechRecognitionSupported()) {
+    const text = (window.prompt(`Reply to ${name}:`) || '').trim();
+    if (text) sendDriverReply(toUid, name, text);
+    return;
+  }
+
+  if (activeVoiceReplyRecognition) {
+    try { activeVoiceReplyRecognition.stop(); } catch (e) { /* ignore */ }
+  }
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const rec = new SpeechRecognitionCtor();
+  rec.lang = (navigator.language || 'en-US');
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  activeVoiceReplyRecognition = rec;
+  showListeningIndicator(name);
+
+  rec.onresult = (e) => {
+    const text = (e.results && e.results[0] && e.results[0][0] && e.results[0][0].transcript || '').trim();
+    if (text) sendDriverReply(toUid, name, text);
+    else toast("Didn't catch that — try the 🎤 Reply button again.", 4000);
+  };
+  rec.onerror = (e) => {
+    const reason = e.error === 'not-allowed' ? 'microphone access is blocked — check your browser/site permissions'
+      : e.error === 'no-speech' ? "didn't hear anything — try again"
+      : e.error || 'unknown error';
+    toast('Voice reply: ' + reason, 5000);
+  };
+  rec.onend = () => { hideListeningIndicator(); activeVoiceReplyRecognition = null; };
+
+  try { rec.start(); } catch (e) {
+    toast("Couldn't start listening: " + e.message, 4000);
+    hideListeningIndicator();
+    activeVoiceReplyRecognition = null;
+  }
+}
+
+function showListeningIndicator(name) {
+  hideListeningIndicator();
+  const div = document.createElement('div');
+  div.id = 'voiceReplyIndicator';
+  div.className = 'listening-indicator';
+  div.innerHTML = `🎙 Listening — reply to ${escapeHtml(name)}…`;
+  document.body.appendChild(div);
+}
+function hideListeningIndicator() {
+  const div = document.getElementById('voiceReplyIndicator');
+  if (div) div.remove();
+}
+
+async function sendDriverReply(toUid, toName, text) {
+  if (!state.share.active || !state.share.pin || !state.fb) { toast('Not sharing right now.', 3000); return; }
+  try {
+    await state.fb.db.collection('trips').doc(state.share.pin).collection('replies').add({
+      text: text.slice(0, 300),
+      toUid,
+      toName: toName || 'Family',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    speak(`Reply sent to ${toName}.`); // audible confirmation — no need to glance at the screen
+    toast(`Reply sent to ${toName}: "${text}"`, 5000);
+  } catch (e) {
+    toast("Couldn't send reply: " + e.message, 6000);
+  }
+}
+
+function wireViewerMessageReplies() {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.reply-btn');
+    if (!btn) return;
+    startVoiceReply(btn.dataset.uid, btn.dataset.name);
+  });
 }
 
 // Loads an image file into an <img> via a blob URL so it can be drawn to a
@@ -2393,14 +2501,68 @@ async function watchTrip(pin) {
         state.watch.events = events;
         renderWatchEvents(events);
       });
+
+    subscribeViewerReplies(pin, uid);
   } catch (e) {
     errEl.textContent = "Couldn't connect: " + e.message;
   }
 }
 
+// A reply the traveler sent back to just this viewer (see startVoiceReply()
+// on the driver side) — filtered to messages targeting this device's own
+// uid. No orderBy in the query itself (a where + orderBy on a different
+// field needs a composite index Firestore would otherwise ask you to
+// create by hand); replies are few enough that sorting the small result
+// set here in JS is simpler than adding one more manual setup step.
+function subscribeViewerReplies(pin, myUid) {
+  if (state.watch.unsubReplies) { state.watch.unsubReplies(); state.watch.unsubReplies = null; }
+  state.watch.replies = [];
+  state.watch.repliesLoaded = false;
+  state.watch.unsubReplies = state.fb.db.collection('trips').doc(pin).collection('replies')
+    .where('toUid', '==', myUid)
+    .onSnapshot((snap) => {
+      const wasAlreadyLoaded = state.watch.repliesLoaded;
+      state.watch.repliesLoaded = true;
+      let gotNew = false;
+      snap.docChanges().forEach((change) => {
+        if (change.type !== 'added') return;
+        const d = change.doc.data();
+        state.watch.replies.push({
+          id: change.doc.id,
+          text: d.text || '',
+          createdAt: (d.createdAt && typeof d.createdAt.toMillis === 'function') ? d.createdAt.toMillis() : Date.now(),
+        });
+        gotNew = true;
+      });
+      if (gotNew) {
+        renderViewerReplies();
+        if (wasAlreadyLoaded) toast('🚗 The traveler replied!', 4000);
+      }
+    }, (e) => toast('Reply sync error: ' + e.message, 6000));
+}
+
+function renderViewerReplies() {
+  const panel = document.getElementById('viewerRepliesPanel');
+  const list = document.getElementById('viewerRepliesList');
+  if (!panel || !list) return;
+  const replies = state.watch.replies;
+  if (!replies.length) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  list.innerHTML = replies.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, 20).map((r) => {
+    const when = new Date(r.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return `<div class="viewer-message viewer-reply">
+      <div class="viewer-message-meta">🚗 The traveler · ${when}</div>
+      <div class="viewer-message-text">${escapeHtml(r.text)}</div>
+    </div>`;
+  }).join('');
+}
+
 function stopWatching() {
   if (state.watch.unsubTrip) { state.watch.unsubTrip(); state.watch.unsubTrip = null; }
   if (state.watch.unsubEvents) { state.watch.unsubEvents(); state.watch.unsubEvents = null; }
+  if (state.watch.unsubReplies) { state.watch.unsubReplies(); state.watch.unsubReplies = null; }
+  state.watch.replies = [];
+  state.watch.repliesLoaded = false;
   if (state.watch.presenceInterval) { clearInterval(state.watch.presenceInterval); state.watch.presenceInterval = null; }
   if (state.fb && state.watch.pin && state.watch.presenceUid) {
     // Best-effort — leaving means "not watching," so remove the presence
@@ -2424,6 +2586,7 @@ function stopWatching() {
   state.watch.etaTapMarker = null; // destroyed along with the map above
   state.watch.fullscreen = false;
   document.getElementById('watchScreen').classList.remove('watch-fullscreen');
+  renderViewerReplies(); // clears/hides any replies shown from the trip just left
 }
 
 // A plain up-arrow rotated to the reported heading reads as a direction-of-
@@ -3338,7 +3501,14 @@ const HELP_TOPICS = {
       voice is still busy after a few seconds it gives up on speaking that
       one, but it's always still sitting here in the panel to read.</p>
       <p>This only appears while you're actively sharing a leg — nobody has
-      anyone to message otherwise.</p>`,
+      anyone to message otherwise.</p>
+      <p>Each message has a <b>🎤 Reply</b> button — tap it, speak your
+      answer, and it goes straight back to that one person (not everyone
+      watching), read on their screen and shown as a reply there. Nothing
+      to type; just tap, talk, and it's sent, with a short spoken
+      confirmation so you don't need to look at the screen. If your browser
+      doesn't support voice input, it falls back to a quick one-line text
+      prompt instead.</p>`,
   },
   'watch-pin-overview': {
     title: 'Watching a trip',
@@ -3411,8 +3581,19 @@ const HELP_TOPICS = {
       the traveler's dashboard below their map, and gets read aloud to them
       through voice guidance too (unless they're mid-turn, in which case it
       waits so it doesn't talk over an actual turn instruction).</p>
-      <p>There's no reply feature yet — this is one-way, family to
-      traveler.</p>`,
+      <p>They can reply — see <b>🚗 Reply from the Traveler</b> above this
+      box — but only to whoever's message they tapped Reply on, so a reply
+      shows up here only if the traveler actually replied to you
+      specifically, not to someone else watching.</p>`,
+  },
+  'watch-replies': {
+    title: 'Reply from the Traveler',
+    html: `
+      <p>When the traveler taps <b>🎤 Reply</b> on your message and speaks
+      an answer, it shows up here, addressed to you specifically — nobody
+      else watching sees it.</p>
+      <p>This panel only appears once you've actually gotten a reply; no
+      reply yet just means nothing to show.</p>`,
   },
 };
 
@@ -3559,6 +3740,7 @@ function init() {
   wireSharing();
   wireWatchScreen();
   wireEventActions();
+  wireViewerMessageReplies();
   checkForActiveLeg();
 
   const linkedPin = getAutoWatchPinFromUrl();
