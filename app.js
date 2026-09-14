@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.11';
+const APP_VERSION = 'v2026.09.14.12';
 
 /* ============================== UTILITIES ============================== */
 
@@ -381,17 +381,21 @@ async function handleMapTapForEta(lat, lon) {
     .openPopup();
   state.etaTapMarker = marker;
   try {
-    const [route, label] = await Promise.all([
+    const [route, label, weather] = await Promise.all([
       orsRoute(state.loc, { lat, lon }),
       orsReverseGeocode(lat, lon),
+      nwsCurrentConditionsAt(lat, lon),
     ]);
     const etaTime = fmtClockFromNowPlus(route.totalDur);
     const etaDate = etaDateLabel(route.totalDur);
+    const lastCoord = route.coords[route.coords.length - 1];
+    const elevFt = (lastCoord && typeof lastCoord[2] === 'number') ? Math.round(lastCoord[2] * M_TO_FT) : null;
     marker.setPopupContent(`
       <div style="min-width:180px;">
         <b>📍 ${escapeHtml(label || 'This spot')}</b><br>
         ${fmtMiles(route.totalDist)} · ${fmtDurationShort(route.totalDur)} drive<br>
         <b>ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>
+        ${tapEtaExtrasLine(elevFt, weather)}
       </div>`);
   } catch (e) {
     marker.setPopupContent(`<div style="min-width:160px;">Couldn't find a route there: ${escapeHtml(e.message)}</div>`);
@@ -578,6 +582,34 @@ async function nwsAlertsAt(lat, lon) {
   if (!res.ok) throw new Error('NWS alerts failed');
   const json = await res.json();
   return json.features || [];
+}
+
+// Current conditions (temperature + short forecast) for a single point —
+// used by the tap-anywhere-ETA popups on both driver and viewer sides (see
+// handleMapTapForEta() / handleWatchMapTapForEta() and tapEtaExtrasLine()
+// below). NWS needs no API key, so unlike elevation this works as a live,
+// exact lookup from either side. Returns null on any failure (outside NWS/US
+// coverage, network hiccup, etc.) — the caller just omits weather from the
+// popup rather than blocking on it.
+async function nwsCurrentConditionsAt(lat, lon) {
+  try {
+    const periods = await nwsForecastAt(lat, lon);
+    const p = periods && periods[0];
+    if (!p) return null;
+    return { tempF: p.temperature, tempUnit: p.temperatureUnit || 'F', forecast: p.shortForecast || '' };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Builds the "⛰ 4,320 ft · 68°F Partly Cloudy" line appended to tap-for-ETA
+// popups. Either piece can be missing (elevFt null/undefined, weather null)
+// — each is just omitted rather than showing a blank or "N/A".
+function tapEtaExtrasLine(elevFt, weather) {
+  const parts = [];
+  if (typeof elevFt === 'number') parts.push(`⛰ ${elevFt.toLocaleString()} ft`);
+  if (weather) parts.push(`${weather.tempF}°${weather.tempUnit} ${escapeHtml(weather.forecast)}`.trim());
+  return parts.length ? `<br><span class="muted" style="font-size:12px;">${parts.join(' · ')}</span>` : '';
 }
 
 function coordAtDistance(targetMiles) {
@@ -1417,7 +1449,15 @@ async function generateUniquePin(db, uid) {
 function sampleRouteForShare(route, maxPoints) {
   maxPoints = maxPoints || 300;
   const { coords, cumDist, cumDur } = route;
-  const toPoint = (i) => ({ lat: coords[i][1], lon: coords[i][0], cumDist: cumDist[i], cumDur: cumDur[i] });
+  const toPoint = (i) => {
+    const p = { lat: coords[i][1], lon: coords[i][0], cumDist: cumDist[i], cumDur: cumDur[i] };
+    // Elevation (3rd coord value, meters) rides along here so a viewer —
+    // who has no ORS key to look it up live — can still show an
+    // approximate elevation on their tap-for-ETA popup. See
+    // handleWatchMapTapForEta().
+    if (typeof coords[i][2] === 'number') p.elevFt = Math.round(coords[i][2] * M_TO_FT);
+    return p;
+  };
   if (coords.length <= maxPoints) return coords.map((c, i) => toPoint(i));
   const out = [];
   const step = (coords.length - 1) / (maxPoints - 1);
@@ -2793,7 +2833,18 @@ function handleWatchMapTapForEta(lat, lon) {
     const etaDate = etaDateLabel(Math.max(0, remainingSec));
     body = `${fmtMiles(Math.max(0, aheadMiles))} ahead of them · ${fmtDurationShort(Math.max(0, remainingSec))} more driving<br><b>Est. ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>`;
   }
-  marker.bindPopup(`<div style="min-width:190px;">${body}${offRouteNote}</div>`).openPopup();
+  // Elevation is only as good as the nearest shared route sample (an
+  // approximation, same caveat as offRouteNote above) — but weather needs
+  // no API key, so it's fetched live and exact directly from this browser,
+  // same as the driver gets. Weather is fetched after opening the popup so
+  // the ETA itself is never held up waiting on the network.
+  const elevFt = typeof tapped.point.elevFt === 'number' ? tapped.point.elevFt : null;
+  marker.bindPopup(`<div style="min-width:190px;">${body}${tapEtaExtrasLine(elevFt, null)}${offRouteNote}<br><span class="muted" style="font-size:12px;">Getting current weather…</span></div>`).openPopup();
+
+  nwsCurrentConditionsAt(lat, lon).then((weather) => {
+    if (!marker.isPopupOpen()) return;
+    marker.setPopupContent(`<div style="min-width:190px;">${body}${tapEtaExtrasLine(elevFt, weather)}${offRouteNote}</div>`);
+  });
 }
 
 function renderWatchStatus(msg) {
@@ -3393,9 +3444,9 @@ const HELP_TOPICS = {
         it to look around and a <b>⌖ Recenter</b> button appears to snap
         back.</li>
         <li><b>Tap anywhere</b> — a town ahead, a detour, anywhere — to see
-        the drive distance/time and a clock ETA to that exact spot. This
-        runs a fresh calculation each time and never changes your actual
-        route.</li>
+        the drive distance/time and a clock ETA to that exact spot, plus the
+        elevation there and the current weather. This runs a fresh
+        calculation each time and never changes your actual route.</li>
         <li>The button in the top-right cycles Satellite/Street/Auto (Auto
         switches based on your speed).</li>
         <li><b>⛶ Full Map</b> (top-left) expands the map to fill the
@@ -3554,6 +3605,11 @@ const HELP_TOPICS = {
         route data already shared with you (you don't have your own routing
         key), so it's most accurate for a tap right on or very near their
         route line — it'll say so if your tap landed well off of it.</li>
+        <li>The popup also shows elevation and current weather at the
+        tapped spot. Elevation is an estimate from the nearest point on
+        their shared route (same accuracy caveat as the ETA); weather is a
+        live, exact lookup for that spot and loads in a moment after the
+        rest of the popup appears.</li>
       </ul>`,
   },
   'watch-mountains': {
