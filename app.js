@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.13';
+const APP_VERSION = 'v2026.09.14.14';
 
 /* ============================== UTILITIES ============================== */
 
@@ -239,6 +239,49 @@ function parseLatLon(text) {
   if (m[4] && /w/i.test(m[4])) lon = -Math.abs(lon);
   if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
   return { lat, lon };
+}
+
+// Recognizes a Google Maps link pasted into a destination/start search box
+// and pulls the coordinates straight out of it — a way around the two gaps
+// in ORS's own geocoder (see orsGeocode()), which is built entirely on
+// OpenStreetMap data: small local businesses that OSM doesn't have mapped
+// by name (a beer garden, say), and street intersections (its address
+// parser handles house-number addresses and place names, not "Main St &
+// Gurley St" style queries). Google Maps covers both far better, so the
+// idea is: search or drop a pin there, copy the link, paste it here.
+//
+// Only a full-length link works (google.com/maps/... or maps.google.com/...)
+// — a short share-sheet link like maps.app.goo.gl/xxxx or goo.gl/maps/xxxx
+// can't be expanded to find out where it actually points from inside a
+// browser page (that redirect doesn't allow a cross-site script to read
+// where it leads), so those are recognized just enough to explain why
+// rather than silently failing outright. Opening a short link once in any
+// browser tab turns it into a full link this can use.
+function parseGoogleMapsUrl(text) {
+  if (!text) return null;
+  const trimmed = text.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  if (!/google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/i.test(trimmed)) return null;
+  if (/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(trimmed)) return { shortLink: true };
+
+  // Most precise: the place's actual pinned point, e.g. ...!3d34.5395!4d-112.4685...
+  let m = trimmed.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  // Next best: where the map was centered when the link was made, e.g. .../@34.5395,-112.4685,17z
+  if (!m) m = trimmed.match(/@(-?\d+\.\d+),(-?\d+\.\d+)(?:,|\/|$)/);
+  // Older-style link: ...?q=34.5395,-112.4685
+  if (!m) m = trimmed.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (!m) return null;
+
+  const lat = parseFloat(m[1]);
+  const lon = parseFloat(m[2]);
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+
+  let label = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+  const nameMatch = trimmed.match(/\/place\/([^/@]+)/);
+  if (nameMatch) {
+    try { label = decodeURIComponent(nameMatch[1].replace(/\+/g, ' ')); } catch (e) { /* keep coordinate label */ }
+  }
+  return { lat, lon, label };
 }
 
 async function orsGeocode(text) {
@@ -3158,6 +3201,21 @@ function wireSetupScreen() {
       });
       return;
     }
+    const gmaps = parseGoogleMapsUrl(e.target.value);
+    if (gmaps) {
+      if (gmaps.shortLink) {
+        destResults.innerHTML = `<div class="result-item">That's a shortened Google Maps link — open it once in any browser tab first (it'll turn into a longer google.com/maps/... link), then paste that one here instead.</div>`;
+        return;
+      }
+      state.pendingDest = { lat: gmaps.lat, lon: gmaps.lon, label: gmaps.label };
+      destResults.innerHTML = `<div class="result-item selected">📍 ${escapeHtml(gmaps.label)} (from Google Maps link) — drag the pin below to fine-tune if needed.</div>`;
+      refreshCalcButton();
+      ensureFineTuneMap('dest', gmaps.lat, gmaps.lon, (lat, lon) => {
+        state.pendingDest.lat = lat;
+        state.pendingDest.lon = lon;
+      });
+      return;
+    }
     searchDest(e.target.value);
   });
 
@@ -3200,6 +3258,21 @@ function wireSetupScreen() {
       startResults.innerHTML = `<div class="result-item selected">📍 Using coordinates ${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)} — drag the pin below to fine-tune if needed.</div>`;
       refreshCalcButton();
       ensureFineTuneMap('start', coords.lat, coords.lon, (lat, lon) => {
+        state.manualStart.lat = lat;
+        state.manualStart.lon = lon;
+      });
+      return;
+    }
+    const gmaps = parseGoogleMapsUrl(e.target.value);
+    if (gmaps) {
+      if (gmaps.shortLink) {
+        startResults.innerHTML = `<div class="result-item">That's a shortened Google Maps link — open it once in any browser tab first (it'll turn into a longer google.com/maps/... link), then paste that one here instead.</div>`;
+        return;
+      }
+      state.manualStart = { lat: gmaps.lat, lon: gmaps.lon, label: gmaps.label };
+      startResults.innerHTML = `<div class="result-item selected">📍 ${escapeHtml(gmaps.label)} (from Google Maps link) — drag the pin below to fine-tune if needed.</div>`;
+      refreshCalcButton();
+      ensureFineTuneMap('start', gmaps.lat, gmaps.lon, (lat, lon) => {
         state.manualStart.lat = lat;
         state.manualStart.lon = lon;
       });
@@ -3526,7 +3599,14 @@ const HELP_TOPICS = {
       <p>Tap <b>Set manually</b> to search for a different starting spot
       instead (for example, planning tomorrow's leg tonight from home). You
       can drag the pin afterward to fine-tune it, or type coordinates
-      directly if the spot has no address.</p>`,
+      directly if the spot has no address.</p>
+      <p>Search here comes from OpenStreetMap, so it's great for addresses
+      and well-known chains but can miss small local businesses and doesn't
+      understand street intersections ("Main St & Gurley St"). For either of
+      those, find the spot in Google Maps instead and paste its link
+      straight into this box (a long <code>google.com/maps/...</code> link —
+      a short share-sheet link needs opening once in a browser first to
+      expand it) and it'll drop the pin exactly there.</p>`,
   },
   destination: {
     title: 'Destination',
@@ -3537,7 +3617,14 @@ const HELP_TOPICS = {
       <p>No address for the spot (a trailhead, campsite, backcountry
       turnoff)? Type coordinates straight in instead, like
       <code>34.5625, -112.2867</code> or <code>34.5625° N, 112.2867° W</code>
-      — the app recognizes it immediately, no search needed.</p>`,
+      — the app recognizes it immediately, no search needed.</p>
+      <p>Search here comes from OpenStreetMap, so it's great for addresses
+      and well-known chains but can miss small local businesses and doesn't
+      understand street intersections ("Main St & Gurley St"). For either of
+      those, find the spot in Google Maps instead and paste its link
+      straight into this box (a long <code>google.com/maps/...</code> link —
+      a short share-sheet link needs opening once in a browser first to
+      expand it) and it'll drop the pin exactly there.</p>`,
   },
   'saved-legs': {
     title: 'Saved legs',
