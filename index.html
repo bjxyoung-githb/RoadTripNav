@@ -21,8 +21,20 @@
   <div class="brand">🧭 Road Trip Navigator</div>
   <button id="voiceToggleBtn" class="ghost-btn small" title="Toggle voice guidance">🔊</button>
   <div id="connStatus" class="conn-status conn-unknown">GPS: waiting…</div>
+  <button id="helpBtn" class="ghost-btn small" title="Help">❓</button>
   <button id="settingsBtn" class="ghost-btn small">⚙</button>
 </header>
+
+<!-- HELP MODAL (context-sensitive: content is filled in based on what screen/section you asked from) -->
+<div id="helpModal" class="modal hidden">
+  <div class="modal-card help-card">
+    <h2 id="helpTitle">Help</h2>
+    <div id="helpBody"></div>
+    <div class="modal-actions">
+      <button id="closeHelpBtn" class="ghost-btn">Close</button>
+    </div>
+  </div>
+</div>
 
 <!-- SETTINGS / SETUP MODAL -->
 <div id="settingsModal" class="modal hidden">
@@ -69,7 +81,7 @@
 <div id="setupScreen" class="setup-screen">
   <div class="setup-card">
     <div id="resumeLegBanner" class="resume-leg-banner hidden">
-      <div class="resume-leg-text">You have an unfinished trip to <span id="resumeLegDest">–</span> from earlier — pick up right where you left off?</div>
+      <div class="resume-leg-text">You have an unfinished trip to <span id="resumeLegDest">–</span> from earlier — pick up right where you left off? <button class="help-btn" data-help="resume-banner" title="Help" aria-label="Help">?</button></div>
       <div class="resume-leg-actions">
         <button id="resumeLegBtn" class="primary-btn small">▶ Resume Trip</button>
         <button id="discardLegBtn" class="ghost-btn small">Discard</button>
@@ -78,12 +90,12 @@
 
     <button id="watchTripLink" class="primary-btn" style="width:100%;margin-bottom:18px;">👀 Watch someone else's shared trip</button>
 
-    <h1>Plan your trip's next leg</h1>
+    <h1>Plan your trip's next leg <button class="help-btn" data-help="setup-overview" title="Help" aria-label="Help">?</button></h1>
     <p class="muted">Uses this phone's own GPS as the starting point automatically. You can also set a manual start.</p>
 
     <button id="enableVoiceBtn" class="ghost-btn" style="width:100%;margin-bottom:14px;">🔊 Enable Voice Guidance</button>
 
-    <label>Starting point</label>
+    <label>Starting point <button class="help-btn" data-help="start-point" title="Help" aria-label="Help">?</button></label>
     <div class="row">
       <input id="startInput" type="text" placeholder="Using live GPS location" disabled>
       <button id="manualStartBtn" class="ghost-btn small">Set manually</button>
@@ -94,7 +106,7 @@
       <div id="startFineTuneMap" class="fine-tune-map"></div>
     </div>
 
-    <label>Destination city or address</label>
+    <label>Destination city or address <button class="help-btn" data-help="destination" title="Help" aria-label="Help">?</button></label>
     <input id="destInput" type="text" placeholder="e.g. Grand Canyon National Park, AZ">
     <div id="destResults" class="results-list"></div>
     <div id="destFineTune" class="fine-tune hidden">
@@ -109,7 +121,7 @@
     <div id="setupError" class="error-text"></div>
 
     <div id="legsPanel">
-      <h3>Saved legs</h3>
+      <h3>Saved legs <button class="help-btn" data-help="saved-legs" title="Help" aria-label="Help">?</button></h3>
       <div id="legsList" class="legs-list"></div>
     </div>
 
@@ -121,7 +133,7 @@
 <div id="watchScreen" class="setup-screen hidden">
   <div class="setup-card">
     <div id="watchPinEntry">
-      <h1>Watch a trip</h1>
+      <h1>Watch a trip <button class="help-btn" data-help="watch-pin-overview" title="Help" aria-label="Help">?</button></h1>
       <p class="muted">Enter the passcode the traveler shared with you to see their live location, photos, and comments.</p>
 
       <label>Trip passcode</label>
@@ -131,17 +143,33 @@
     </div>
 
     <div id="watchLive" class="hidden">
-      <div id="watchStatus" class="watch-status muted">Connecting…</div>
+      <div class="watch-status-row">
+        <div id="watchStatus" class="watch-status muted">Connecting…</div>
+        <button class="help-btn" data-help="watch-live-overview" title="Help" aria-label="Help">?</button>
+      </div>
       <div id="watchWeather" class="watch-weather muted"></div>
       <div id="watchElevation" class="watch-weather muted"></div>
       <div id="watchMap" class="watch-map"></div>
 
+      <div class="viewer-message-compose">
+        <div class="section-title-row" style="margin:10px 0 6px;">
+          <span class="small-label">💬 Send a message</span>
+          <button class="help-btn" data-help="watch-send-message" title="Help" aria-label="Help">?</button>
+        </div>
+        <input id="watchNameInput" type="text" placeholder="Your name" maxlength="40">
+        <div class="row" style="margin-top:8px;">
+          <input id="watchMessageInput" type="text" placeholder="Message the driver…" maxlength="300">
+          <button id="watchSendMsgBtn" class="ghost-btn small">Send</button>
+        </div>
+      </div>
+
       <details>
-        <summary>⛰ Mountains Nearby</summary>
+        <summary>⛰ Mountains Nearby <button class="help-btn" data-help="watch-mountains" title="Help" aria-label="Help">?</button></summary>
         <div id="watchPeaksPanel" class="panel-body muted">Loading…</div>
         <div class="hint small">Named peaks near the traveler's location by straight-line distance — not a guaranteed line-of-sight view.</div>
       </details>
 
+      <div class="section-title-row muted small-label">📝 Trip Log <button class="help-btn" data-help="watch-events" title="Help" aria-label="Help">?</button></div>
       <div id="watchEvents" class="watch-events"></div>
       <button id="watchBackBtn" class="ghost-btn" style="width:100%;margin-top:14px;">← Back</button>
     </div>
@@ -151,6 +179,14 @@
 <!-- MAIN DASHBOARD -->
 <div id="dashboard" class="dashboard hidden">
   <div id="map"></div>
+
+  <div id="viewerMessagesPanel" class="viewer-messages-panel hidden">
+    <div class="section-title-row" style="margin:0 0 6px;">
+      <span class="small-label">💬 Messages from Family</span>
+      <button class="help-btn" data-help="viewer-messages" title="Help" aria-label="Help">?</button>
+    </div>
+    <div id="viewerMessagesList" class="viewer-messages-list"></div>
+  </div>
 
   <div id="turnBanner" class="turn-banner">
     <div id="statNextTurn" class="turn-instruction">–</div>
@@ -164,6 +200,7 @@
     </div>
     <div class="stat">
       <div class="stat-val" id="statEta">–</div>
+      <div class="stat-eta-date" id="statEtaDate"></div>
       <div class="stat-lbl">ETA</div>
     </div>
     <div class="stat">
@@ -181,48 +218,48 @@
   <div id="accordion" class="accordion">
 
     <details>
-      <summary>⛽ Fuel Planner</summary>
+      <summary>⛽ Fuel Planner <button class="help-btn" data-help="fuel-planner" title="Help" aria-label="Help">?</button></summary>
       <div id="fuelPanel" class="panel-body muted">Set your vehicle range in Settings to enable.</div>
     </details>
 
     <details open>
-      <summary>🌦 Weather Ahead</summary>
+      <summary>🌦 Weather Ahead <button class="help-btn" data-help="weather-ahead" title="Help" aria-label="Help">?</button></summary>
       <div id="weatherPanel" class="panel-body muted">Loading…</div>
     </details>
 
     <details>
-      <summary>⚠️ Road &amp; Weather Alerts</summary>
+      <summary>⚠️ Road &amp; Weather Alerts <button class="help-btn" data-help="alerts" title="Help" aria-label="Help">?</button></summary>
       <div id="alertsPanel" class="panel-body muted">Loading…</div>
     </details>
 
     <details>
-      <summary>📍 Upcoming Stops</summary>
+      <summary>📍 Upcoming Stops <button class="help-btn" data-help="upcoming-stops" title="Help" aria-label="Help">?</button></summary>
       <div id="poiPanel" class="panel-body muted">Loading…</div>
     </details>
 
     <details>
-      <summary>⛰ Mountains Nearby</summary>
+      <summary>⛰ Mountains Nearby <button class="help-btn" data-help="mountains-nearby" title="Help" aria-label="Help">?</button></summary>
       <div id="peaksPanel" class="panel-body muted">Loading…</div>
       <div class="hint small">Named peaks near your location by straight-line distance — not a guaranteed line-of-sight view.</div>
     </details>
 
     <details>
-      <summary>☀️ Daylight</summary>
+      <summary>☀️ Daylight <button class="help-btn" data-help="daylight" title="Help" aria-label="Help">?</button></summary>
       <div id="daylightPanel" class="panel-body muted">Loading…</div>
     </details>
 
     <details>
-      <summary>🚗 Drive Timer</summary>
+      <summary>🚗 Drive Timer <button class="help-btn" data-help="drive-timer" title="Help" aria-label="Help">?</button></summary>
       <div id="breakPanel" class="panel-body muted">–</div>
     </details>
 
     <details>
-      <summary>🧭 Full turn-by-turn</summary>
+      <summary>🧭 Full turn-by-turn <button class="help-btn" data-help="turn-by-turn" title="Help" aria-label="Help">?</button></summary>
       <div id="stepsPanel" class="panel-body steps-list"></div>
     </details>
 
     <details>
-      <summary>📡 Share &amp; Trip Log</summary>
+      <summary>📡 Share &amp; Trip Log <button class="help-btn" data-help="share-trip-log" title="Help" aria-label="Help">?</button></summary>
       <div id="sharePanel" class="panel-body">Loading…</div>
       <input id="mediaFileInputCamera" type="file" accept="image/*" capture="environment" class="hidden">
       <input id="mediaFileInputGallery" type="file" accept="image/*" class="hidden">
