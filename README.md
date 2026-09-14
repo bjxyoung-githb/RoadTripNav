@@ -97,6 +97,15 @@ avoids that.
 
 ## 3. What each part does
 
+- **Built-in help** — tap the **❓** in the top bar any time for an overview
+  of whatever screen you're currently on (planning, driving, or watching).
+  For more detail on one specific feature, look for a small **?** next to
+  its name — on a field label, an accordion section like "Weather Ahead,"
+  or (for the map itself) a **❓ Help** button in its bottom-left corner.
+  Viewers watching a shared trip get their own set of these too, tailored
+  to what they can actually do (their map's help explains why their
+  tap-for-ETA is an estimate rather than a live calculation, for instance).
+  None of this needs an internet lookup — it's all built into the app.
 - **Route & turn-by-turn** — calculated by OpenRouteService; the map shows
   your route, your live position, and the full step list with the current
   step highlighted. Spoken prompts announce each turn about a mile ahead
@@ -129,7 +138,23 @@ avoids that.
   new GPS fixes. Elevation comes from OpenRouteService's own route data
   (requested alongside the route itself, no extra lookups) rather than a
   phone's GPS altitude reading, which tends to be unreliable or missing
-  entirely on most phones.
+  entirely on most phones. On a leg long enough that arrival won't be
+  today, a small date (Tomorrow, or the weekday and date further out)
+  appears right under the ETA time so it can't be misread as "later
+  today."
+- **Tap the map for an ETA anywhere** — tap any spot on the map (a town
+  ahead, a point along your route, or somewhere off it entirely — a detour,
+  a nearby landmark, anything) and a pin drops showing the place name,
+  drive distance, drive time, and a clock-time ETA. This is a fresh,
+  separate calculation each time and never changes your actual planned
+  route — it's just "how long would it take to get *there* from where I am
+  right now." Anyone watching your shared trip can tap their map too, but
+  their version is an estimate rather than a live calculation, since
+  viewers don't have their own OpenRouteService key: it works out the
+  distance/time by comparing the tapped spot to your current position along
+  the route data already being shared, so it's best for spots at or near
+  your route line (it'll say if your tap landed well off of it) and won't
+  show a place name the way your own tap does.
 - **Auto-follow** — the map recenters on your position as you drive, so you
   never have to nudge it back into view yourself. Drag the map to look
   around (check an upcoming turn, a nearby town, etc.) and auto-follow
@@ -214,6 +239,20 @@ avoids that.
   working the whole time, nothing to resend. Tap **Stop Sharing** (or
   **New / End Leg**) when you're actually done for good; the passcode
   stops working.
+- **Messages from Family** — anyone watching your shared trip has a **💬
+  Send a message** box right below their map on the watch screen. They type
+  their name once (their phone remembers it after that) and a short
+  message, tap **Send**, and it shows up in a **💬 Messages from Family**
+  panel right below your own map — plus gets read aloud through voice
+  guidance the moment it arrives. If you're mid-turn when it comes in
+  (voice already speaking a turn instruction), it waits rather than
+  talking over the turn, and quietly gives up on speaking that one after a
+  few seconds if voice is still busy — either way, it's sitting in the
+  panel to read whenever you glance down. This only shows up while you're
+  actively sharing, and it's one-way (family to you) — there's no reply
+  button. Whatever name someone types is just that — self-reported, not
+  verified — which is worth knowing but is normally a complete non-issue
+  for a small group of family you already shared the link with.
 
 ## 4. Troubleshooting
 
@@ -223,6 +262,25 @@ avoids that.
   mentioned in whatever update you just applied — if it still shows the old
   date, that's a stale cached copy, not a failed upload (see the caching
   entries below).
+- **Uploading an update — don't forget `version.json`** — every file update
+  you upload should include an updated `version.json` (just one line:
+  `{"version": "vYYYY.MM.DD.N"}`) that matches the new `APP_VERSION` in
+  `app.js`. This is what powers the automatic update check below — everyone
+  already running the app (you and anyone watching a shared trip) gets
+  polled against this file every few minutes and whenever they switch back
+  to the tab, and a small **🔄 A newer version is available** banner appears
+  at the bottom of their screen with a **Reload Now** button if it's out of
+  date. No more asking family what version they're on — if their banner
+  never shows up, they're current. **Later** dismisses it for that one
+  update (it'll come back if you ship another). Forgetting to update
+  `version.json` doesn't break anything — it just means this particular
+  check won't notice the new version exists.
+- **Someone's banner never shows up even though they're clearly out of
+  date** — the update-check code itself only exists starting with this
+  version; a phone still running an even older copy has no way to know to
+  ask. That's a one-time thing — have them force-refresh once (see the
+  caching entries below) to get onto a version that includes the checker,
+  and every update after that announces itself automatically from then on.
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
@@ -288,6 +346,24 @@ avoids that.
   standard Drive share link. Tapping it still opens the video in Drive
   either way — double-check the sharing setting if you want the preview
   image too.
+- **Tapping the map for an ETA says "Couldn't find a route there"** — same
+  causes as any routing error (API key issue, or that spot genuinely isn't
+  reachable by road, like the middle of a lake or a private tract with no
+  mapped access).
+- **A viewer's tap-for-ETA looks off, or says the tap is far from the
+  route** — expected once the tap lands well away from your route line;
+  viewers estimate off the route data already shared with them rather than
+  running a live route calculation (no ORS key on their end), so it's most
+  accurate right on or very near your path. Your own tap (as the driver)
+  always calculates live and works anywhere, on-route or off.
+- **A viewer gets "Couldn't send: Missing or insufficient permissions"
+  sending a message** — your Firestore rules need the new `messages` block
+  added; see section 7b's note about updating existing rules.
+- **A message showed up in the panel but wasn't read aloud** — either voice
+  guidance itself is off (check the 🔊/🔇 icon in the top bar), or it was
+  still busy reading an actual turn instruction when the message arrived
+  and stayed busy long enough that it gave up trying — the message is still
+  right there in the panel either way, nothing was lost.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
@@ -414,10 +490,35 @@ free, no billing/Blaze plan needed:
            allow create, update: if request.auth != null && request.auth.uid == viewerId;
            allow delete: if request.auth != null && request.auth.uid == viewerId;
          }
+
+         match /messages/{messageId} {
+           allow read: if request.auth != null
+             && (get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid
+                 || request.auth.uid == resource.data.senderUid);
+           allow create: if request.auth != null
+             && request.resource.data.senderUid == request.auth.uid
+             && request.resource.data.text is string
+             && request.resource.data.text.size() > 0
+             && request.resource.data.text.size() <= 300
+             && request.resource.data.senderName is string
+             && request.resource.data.senderName.size() <= 40;
+           allow update: if false;
+           allow delete: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
+         }
        }
      }
    }
    ```
+
+   **Already set this up before?** The `messages` block above is new — it's
+   what lets family send you messages (see section 3). Go back to
+   Firestore Database → **Rules**, replace what's there with the full block
+   above (all four `match` blocks — `trips`, `events`, `viewers`, and the
+   new `messages`), and **Publish** again. Nothing else needs to change;
+   your existing trip data, photos, and viewers are untouched. Until you do
+   this, viewers will get a permissions error trying to send a message —
+   everything else in the app keeps working normally either way.
 
 This rule means: only your own phone (recognized by a private key Firebase
 generates the first time you use this feature) can ever start a trip,
