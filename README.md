@@ -145,16 +145,20 @@ avoids that.
 - **Tap the map for an ETA anywhere** — tap any spot on the map (a town
   ahead, a point along your route, or somewhere off it entirely — a detour,
   a nearby landmark, anything) and a pin drops showing the place name,
-  drive distance, drive time, and a clock-time ETA. This is a fresh,
-  separate calculation each time and never changes your actual planned
-  route — it's just "how long would it take to get *there* from where I am
-  right now." Anyone watching your shared trip can tap their map too, but
-  their version is an estimate rather than a live calculation, since
-  viewers don't have their own OpenRouteService key: it works out the
-  distance/time by comparing the tapped spot to your current position along
-  the route data already being shared, so it's best for spots at or near
-  your route line (it'll say if your tap landed well off of it) and won't
-  show a place name the way your own tap does.
+  drive distance, drive time, a clock-time ETA, the elevation there, and
+  the current weather. This is a fresh, separate calculation each time and
+  never changes your actual planned route — it's just "how long would it
+  take to get *there* from where I am right now." Anyone watching your
+  shared trip can tap their map too, but their version is an estimate
+  rather than a live calculation, since viewers don't have their own
+  OpenRouteService key: it works out the distance/time by comparing the
+  tapped spot to your current position along the route data already being
+  shared, so it's best for spots at or near your route line (it'll say if
+  your tap landed well off of it) and won't show a place name the way your
+  own tap does. The elevation shown to a viewer is the same kind of
+  estimate (nearest point on the shared route), but the weather is a live,
+  exact lookup either side can make directly — it needs no API key — so it
+  loads in a moment after the rest of the popup appears.
 - **Auto-follow** — the map recenters on your position as you drive, so you
   never have to nudge it back into view yourself. Drag the map to look
   around (check an upcoming turn, a nearby town, etc.) and auto-follow
@@ -372,6 +376,11 @@ avoids that.
   running a live route calculation (no ORS key on their end), so it's most
   accurate right on or very near your path. Your own tap (as the driver)
   always calculates live and works anywhere, on-route or off.
+- **No weather shows up in a tap-for-ETA popup** — the weather line loads a
+  moment after the rest of the popup, so give it a second; if it never
+  appears, the tapped spot is most likely outside the US (the National
+  Weather Service only covers the US and its territories), or there was a
+  network hiccup. Nothing else in the popup is affected either way.
 - **A viewer gets "Couldn't send: Missing or insufficient permissions"
   sending a message** — your Firestore rules need the new `messages` block
   added; see section 7b's note about updating existing rules.
