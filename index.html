@@ -55,6 +55,23 @@
     <label>Rest break reminder (minutes of continuous driving, 0 = off)</label>
     <input id="breakInput" type="number" min="0" placeholder="120">
 
+    <label>Route preference</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefFastest" value="fastest"> Fastest route (uses highways/interstates as needed)</label>
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefBalanced" value="balanced"> Prefer back roads if it's not much slower</label>
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefAvoid" value="avoid-highways"> Always take back roads, no matter the time</label>
+    </div>
+    <div id="backRoadsToleranceRow" class="hidden">
+      <label>How many extra minutes of back roads are you OK with?</label>
+      <input id="backRoadsToleranceInput" type="number" min="0" placeholder="15">
+    </div>
+    <div class="hint">
+      Applies to route calculation, automatic rerouting, and tap-anywhere-for-ETA. "Back roads" means
+      ORS avoids limited-access highways/interstates entirely — it can't detect a slow left-lane
+      camper specifically, but staying off the interstate generally means an oncoming lane is
+      available to legally pass when the way ahead is clear.
+    </div>
+
     <label>Location source</label>
     <div class="radio-row">
       <label class="radio-option"><input type="radio" name="locSource" id="locSourceDevice" value="device"> This device's own GPS (default, use on a phone)</label>
