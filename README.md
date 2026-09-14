@@ -340,6 +340,18 @@ avoids that.
   sign, like `34.5625 N, 112.2867 W`). The app recognizes it immediately —
   no address search needed — and drops a draggable pin so you can nudge it
   to the exact spot if needed.
+- **Search can't find a small local business, or a street intersection** —
+  search here is built on OpenStreetMap, which reliably has well-known
+  chains and most addresses but is hit-or-miss on independent local
+  businesses, and its address parser doesn't understand "Main St & Gurley
+  St" style intersection queries at all. For either case, find the spot in
+  Google Maps instead (much better small-business coverage, and it handles
+  intersections fine) and paste its link straight into the Starting point
+  or Destination box — a long `google.com/maps/...` or `maps.google.com/...`
+  link works and drops the pin exactly there. A short link from the phone's
+  Share button (`maps.app.goo.gl/...`) can't be read this way — open it once
+  in any browser tab first, which turns it into the long link, then paste
+  that one instead.
 - **Starlink/cellular brief dropouts** — the app will show stale/error
   states briefly and recover automatically once the connection returns;
   your route and progress tracking don't require a constant connection
