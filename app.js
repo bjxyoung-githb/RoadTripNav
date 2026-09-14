@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.13.8';
+const APP_VERSION = 'v2026.09.14.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -80,6 +80,36 @@ function toast(msg, ms) {
 const LS_SETTINGS = 'rtnav_settings_v1';
 const LS_TRIP = 'rtnav_trip_v1';
 
+// Safety net for an in-progress leg surviving a full app/browser kill —
+// very possible after being backgrounded for hours (overnight at a hotel,
+// phone restarted, browser reclaiming memory). Saved automatically
+// whenever the route or sharing status changes, with no separate "save"
+// step for the driver to remember, and offered back as a "Resume Trip"
+// prompt (see checkForActiveLeg()) the next time the app opens — so an
+// interrupted trip, and its share link if one was active, can pick up
+// right where it left off instead of starting over with a new link.
+const LS_ACTIVE_LEG = 'rtnav_active_leg_v1';
+
+function persistActiveLeg() {
+  if (!state.route) { clearActiveLeg(); return; }
+  try {
+    localStorage.setItem(LS_ACTIVE_LEG, JSON.stringify({
+      route: state.route,
+      destLabel: (state.route.destForReroute && state.route.destForReroute.label) || null,
+      legLabel: state.currentLegLabel || null,
+      pin: (state.share.active && state.share.pin) || null,
+      savedAt: Date.now(),
+    }));
+  } catch (e) { /* localStorage full/unavailable — resume just won't be offered */ }
+}
+function loadActiveLeg() {
+  try { return JSON.parse(localStorage.getItem(LS_ACTIVE_LEG) || 'null'); }
+  catch (e) { return null; }
+}
+function clearActiveLeg() {
+  localStorage.removeItem(LS_ACTIVE_LEG);
+}
+
 // How long a shared photo's image data lives in Firestore before the app's
 // own cleanup routine (see cleanupExpiredMedia() below) deletes it. Only
 // photo events get this field — comments and video links (which just hold
@@ -132,6 +162,7 @@ const state = {
   manualStart: null,    // {lat,lon,label} if user set a manual start
   pendingDest: null,    // {lat,lon,label} chosen from search results before route calc
   route: null,          // {coords:[[lon,lat]], cumDist:[mi], cumDur:[s], steps:[], totalDist, totalDur}
+  currentLegLabel: null, // whatever was typed in "Label this leg" when the route was calculated — see persistActiveLeg()
   currentStepIndex: 0,
   lastRerouteAt: 0,
   driving: { continuousSince: null, stoppedSince: null, lastRestSuggestedAt: null },
@@ -144,7 +175,7 @@ const state = {
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
-  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, viewerCount: 0, events: [], lastPushAt: 0, lastPushLoc: null },
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, viewerCount: 0, events: [], lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null },
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false },
 };
 
@@ -165,6 +196,25 @@ function mapGeocodeFeature(f) {
     layer: f.properties.layer || null, // 'address' | 'street' | 'locality' | 'region' | 'venue' | ...
     confidence: f.properties.confidence || null,
   };
+}
+
+// Recognizes raw "latitude, longitude" typed straight into a search box
+// (e.g. "34.5625, -112.2867", "34.5625 -112.2867", or with N/S/E/W suffixes
+// like "34.5625 N, 112.2867 W") so a destination or starting point can be
+// pinned exactly, without needing a matching street address — handy for a
+// trailhead, campsite, or any spot the address-search geocoder doesn't
+// know about. Returns null for anything that isn't a clean coordinate
+// pair, so normal address text still falls through to the regular search.
+function parseLatLon(text) {
+  if (!text) return null;
+  const m = text.trim().match(/^(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([NnSs])?\s*[,\s]\s*(-?\d{1,3}(?:\.\d+)?)\s*°?\s*([EeWw])?$/);
+  if (!m) return null;
+  let lat = parseFloat(m[1]);
+  let lon = parseFloat(m[3]);
+  if (m[2] && /s/i.test(m[2])) lat = -Math.abs(lat);
+  if (m[4] && /w/i.test(m[4])) lon = -Math.abs(lon);
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
 }
 
 async function orsGeocode(text) {
@@ -854,6 +904,7 @@ async function maybeReroute(offRouteMiles, curLat, curLon) {
     state.announced = new Set();
     state.arrivalAnnounced = false;
     drawRoute();
+    persistActiveLeg(); // the route just changed — keep the overnight-resume snapshot current
     return true;
   } catch (e) {
     toast('Reroute failed: ' + e.message, 6000);
@@ -951,6 +1002,17 @@ async function onLocationUpdate() {
     refreshDaylight();
   }
   updateDriveTimer();
+
+  // Forgive forgetting to tap "Resume Sharing" the next morning — once
+  // you've actually driven a bit from where you paused, there's no real
+  // ambiguity that you're back on the road, so pick it back up on its own
+  // rather than leaving family looking at a "taking a break" message
+  // indefinitely.
+  if (state.share.active && state.share.paused && state.share.pausedLoc) {
+    const movedMiles = haversineMiles(state.share.pausedLoc.lat, state.share.pausedLoc.lon, cur.lat, cur.lon);
+    if (movedMiles > 0.3) resumeSharingFromPause(true);
+  }
+
   maybePushShareLocation();
 }
 
@@ -1309,9 +1371,13 @@ async function startSharing() {
     state.share.lastPushAt = Date.now();
     state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
     state.share.viewerCount = 0;
+    state.share.paused = false;
+    state.share.pausedAt = 0;
+    state.share.pausedLoc = null;
     rememberOwnTrip(pin);
     subscribeOwnEvents(pin);
     subscribeViewerCount(pin);
+    persistActiveLeg(); // include this pin in the overnight-resume snapshot
     renderSharePanel();
     toast('Sharing started — passcode ' + pin, 6000);
   } catch (e) {
@@ -1333,8 +1399,44 @@ async function stopSharing() {
   clearMarkers(state.eventMarkers);
   sh.active = false; sh.pin = null; sh.ownerUid = null; sh.events = [];
   sh.lastPushAt = 0; sh.lastPushLoc = null; sh.viewerCount = 0;
+  sh.paused = false; sh.pausedAt = 0; sh.pausedLoc = null;
+  persistActiveLeg(); // drop the pin from the overnight-resume snapshot, keep the route
   renderSharePanel();
   toast('Sharing stopped.', 3000);
+}
+
+// Marks the trip as "taking a break" for anyone watching — see
+// renderWatchTrip() for how viewers see this — without actually stopping
+// sharing (the passcode/link keeps working, no need to send a new one).
+// Also remembers where you were so a bit of driving in the morning can
+// clear this automatically — see the auto-resume check in
+// onLocationUpdate().
+function pauseSharingForNight() {
+  const sh = state.share;
+  if (!sh.active) return;
+  sh.paused = true;
+  sh.pausedAt = Date.now();
+  sh.pausedLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+  state.fb.db.collection('trips').doc(sh.pin).set(
+    { paused: true, pausedAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  ).catch(() => { /* best effort; a stale "actively driving" status is a minor cosmetic miss */ });
+  renderSharePanel();
+  toast("Paused — family will see you're taking a break. Tap Resume (or just start driving again) when you're back on the road.", 6000);
+}
+
+function resumeSharingFromPause(auto) {
+  const sh = state.share;
+  if (!sh.active) return;
+  sh.paused = false;
+  sh.pausedAt = 0;
+  sh.pausedLoc = null;
+  state.fb.db.collection('trips').doc(sh.pin).set(
+    { paused: false, pausedAt: null, updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  ).catch(() => { /* best effort */ });
+  renderSharePanel();
+  toast(auto ? "Looks like you're moving again — sharing resumed." : 'Sharing resumed.', 4000);
 }
 
 function maybePushShareLocation() {
@@ -1788,11 +1890,13 @@ function renderSharePanel() {
         <div class="hint">They'd open this same web address themselves, tap "Watch someone else's shared trip," and type this in — useful if the link above doesn't work for some reason.</div>
       </details>
       <div id="viewerCountBadge" class="viewer-count-badge">👀 ${sh.viewerCount || 0} watching now</div>
+      ${sh.paused ? '<div class="paused-badge">🌙 Paused — family sees you\'re taking a break</div>' : ''}
     </div>
     <div class="share-actions">
       <button id="addPhotoBtn" class="ghost-btn small">📷 Add Photo</button>
       <button id="addVideoBtn" class="ghost-btn small">🎥 Video Link</button>
       <button id="addCommentBtn" class="ghost-btn small">💬 Comment</button>
+      <button id="pauseSharingBtn" class="ghost-btn small">${sh.paused ? '▶ Resume Sharing' : '⏸ Pause for the Night'}</button>
       <button id="stopSharingBtn" class="ghost-btn small">Stop Sharing</button>
     </div>
     <div id="photoChoiceRow" class="comment-input-row hidden">
@@ -1842,6 +1946,9 @@ function renderSharePanel() {
     document.getElementById('videoLinkHint').classList.toggle('hidden');
   };
   document.getElementById('addCommentBtn').onclick = () => document.getElementById('commentInputRow').classList.toggle('hidden');
+  document.getElementById('pauseSharingBtn').onclick = () => {
+    if (sh.paused) resumeSharingFromPause(); else pauseSharingForNight();
+  };
   document.getElementById('stopSharingBtn').onclick = stopSharing;
   document.getElementById('videoLinkSendBtn').onclick = () => {
     const input = document.getElementById('videoLinkTextInput');
@@ -2272,6 +2379,13 @@ function renderWatchTrip() {
   const ageSec = trip.lastLocation ? (Date.now() - (trip.lastLocation.updatedAt || 0)) / 1000 : null;
   let status;
   if (!trip.active) status = 'This trip has ended sharing.';
+  else if (trip.paused) {
+    const pausedMs = trip.pausedAt && trip.pausedAt.toMillis ? Date.now() - trip.pausedAt.toMillis() : null;
+    const pausedAgo = pausedMs != null
+      ? (pausedMs < 60 * 60 * 1000 ? Math.round(pausedMs / 60000) + 'm' : Math.round(pausedMs / 3600000) + 'h')
+      : null;
+    status = `🌙 Taking a break${pausedAgo ? ' (' + pausedAgo + ' ago)' : ''} — this will update again once they're back on the road.`;
+  }
   else if (!trip.lastLocation) status = "Waiting for the traveler's first location update…";
   else {
     status = `Heading to ${trip.destLabel || 'destination'} · updated ${ageSec < 60 ? Math.round(ageSec) + 's' : Math.round(ageSec / 60) + 'm'} ago` +
@@ -2414,6 +2528,17 @@ function wireSetupScreen() {
     state.pendingDest = null;
     document.getElementById('destFineTune').classList.add('hidden');
     refreshCalcButton();
+    const coords = parseLatLon(e.target.value);
+    if (coords) {
+      state.pendingDest = { lat: coords.lat, lon: coords.lon, label: `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` };
+      destResults.innerHTML = `<div class="result-item selected">📍 Using coordinates ${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)} — drag the pin below to fine-tune if needed.</div>`;
+      refreshCalcButton();
+      ensureFineTuneMap('dest', coords.lat, coords.lon, (lat, lon) => {
+        state.pendingDest.lat = lat;
+        state.pendingDest.lon = lon;
+      });
+      return;
+    }
     searchDest(e.target.value);
   });
 
@@ -2450,6 +2575,17 @@ function wireSetupScreen() {
   });
   startInput.addEventListener('input', (e) => {
     document.getElementById('startFineTune').classList.add('hidden');
+    const coords = parseLatLon(e.target.value);
+    if (coords) {
+      state.manualStart = { lat: coords.lat, lon: coords.lon, label: `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` };
+      startResults.innerHTML = `<div class="result-item selected">📍 Using coordinates ${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)} — drag the pin below to fine-tune if needed.</div>`;
+      refreshCalcButton();
+      ensureFineTuneMap('start', coords.lat, coords.lon, (lat, lon) => {
+        state.manualStart.lat = lat;
+        state.manualStart.lon = lon;
+      });
+      return;
+    }
     searchStart(e.target.value);
   });
 
@@ -2470,6 +2606,7 @@ function wireSetupScreen() {
       state.arrivalAnnounced = false;
 
       const legLabel = document.getElementById('legLabelInput').value.trim();
+      state.currentLegLabel = legLabel || null;
       const leg = {
         id: 'leg_' + Date.now(),
         label: legLabel || null,
@@ -2479,6 +2616,7 @@ function wireSetupScreen() {
       };
       state.trip.legs.push(leg);
       saveTrip(state.trip);
+      persistActiveLeg(); // safety net — see LS_ACTIVE_LEG / checkForActiveLeg()
 
       document.getElementById('setupScreen').classList.add('hidden');
       document.getElementById('dashboard').classList.remove('hidden');
@@ -2600,6 +2738,8 @@ function wireEndLeg() {
   document.getElementById('endLegBtn').addEventListener('click', () => {
     if (state.share.active) stopSharing();
     state.route = null;
+    state.currentLegLabel = null;
+    clearActiveLeg(); // the leg is genuinely done — nothing to offer resuming later
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('setupScreen').classList.remove('hidden');
     document.getElementById('destInput').value = '';
@@ -2607,7 +2747,85 @@ function wireEndLeg() {
     state.pendingDest = null;
     renderLegsList();
     refreshCalcButton();
+    checkForActiveLeg(); // hide the resume banner, if it was showing
   });
+}
+
+/* ============================== RESUME AN INTERRUPTED LEG ============================== */
+// The other half of persistActiveLeg()/LS_ACTIVE_LEG — offered on the setup
+// screen at startup whenever there's a saved snapshot, which is exactly
+// the case after the app/browser gets fully closed mid-leg (overnight at a
+// hotel being the main one, but this covers any interruption the same
+// way: a crash, a restarted phone, low battery, etc).
+
+function checkForActiveLeg() {
+  const banner = document.getElementById('resumeLegBanner');
+  const snap = loadActiveLeg();
+  if (!snap || !snap.route) { banner.classList.add('hidden'); return; }
+  document.getElementById('resumeLegDest').textContent = snap.legLabel || snap.destLabel || 'your destination';
+  banner.classList.remove('hidden');
+  document.getElementById('resumeLegBtn').onclick = () => resumeActiveLeg(snap);
+  document.getElementById('discardLegBtn').onclick = () => {
+    clearActiveLeg();
+    banner.classList.add('hidden');
+  };
+}
+
+async function resumeActiveLeg(snap) {
+  state.route = snap.route;
+  state.currentLegLabel = snap.legLabel || null;
+  state.currentStepIndex = 0;
+  state.lastRerouteAt = 0;
+  state.announced = new Set();
+  state.arrivalAnnounced = false;
+
+  document.getElementById('resumeLegBanner').classList.add('hidden');
+  document.getElementById('setupScreen').classList.add('hidden');
+  document.getElementById('dashboard').classList.remove('hidden');
+  if (!state.map) initMap();
+  state.followMe = true;
+  if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
+  drawRoute();
+  onLocationUpdate();
+
+  if (snap.pin) {
+    await resumeSharing(snap.pin);
+  }
+  renderSharePanel();
+  toast('Trip resumed — picking up right where you left off.', 4000);
+}
+
+// Reconnects to a trip document a previous (now-gone) session was sharing,
+// under the exact same passcode/link, instead of starting a new one —
+// that's the whole point: family never has to be sent a new link just
+// because your phone's browser got closed overnight.
+async function resumeSharing(pin) {
+  try {
+    const { db, uid } = await initFirebase();
+    const docSnap = await db.collection('trips').doc(pin).get();
+    if (!docSnap.exists || docSnap.data().ownerUid !== uid) {
+      toast("Couldn't reconnect the share link from before — tap Start Sharing for a new one.", 6000);
+      return;
+    }
+    await db.collection('trips').doc(pin).set({
+      active: true, paused: false, pausedAt: null,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    state.share.active = true;
+    state.share.pin = pin;
+    state.share.ownerUid = uid;
+    state.share.paused = false;
+    state.share.pausedAt = 0;
+    state.share.pausedLoc = null;
+    state.share.lastPushAt = 0;
+    state.share.lastPushLoc = null;
+    state.share.viewerCount = 0;
+    rememberOwnTrip(pin);
+    subscribeOwnEvents(pin);
+    subscribeViewerCount(pin);
+  } catch (e) {
+    toast("Couldn't reconnect sharing: " + e.message, 6000);
+  }
 }
 
 /* ============================== INIT ============================== */
@@ -2627,6 +2845,7 @@ function init() {
   wireSharing();
   wireWatchScreen();
   wireEventActions();
+  checkForActiveLeg();
 
   const linkedPin = getAutoWatchPinFromUrl();
   if (linkedPin) {
