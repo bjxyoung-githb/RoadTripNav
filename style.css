@@ -153,10 +153,27 @@ input:disabled { opacity: .6; }
 .viewer-message { background: #101a30; border-radius: 8px; padding: 8px 10px; }
 .viewer-message-meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
 .viewer-message-text { font-size: 14px; line-height: 1.35; word-break: break-word; }
+.reply-btn {
+  margin-top: 6px; background: rgba(59,130,246,.15); border: 1px solid var(--accent);
+  color: var(--accent); border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700;
+}
+.reply-btn:active { background: rgba(59,130,246,.3); }
 
 /* Send-a-message box — viewer/watch side, see sendViewerMessage() */
 .viewer-message-compose { margin: 4px 0 2px; }
 .viewer-message-compose input[type=text] { margin: 0; }
+
+/* Replies from the traveler — viewer side, see subscribeViewerReplies() */
+.viewer-replies-panel { background: rgba(51,209,122,.1); border: 1px solid var(--good); border-radius: 10px; margin: 10px 0; max-height: 160px; }
+.viewer-reply { background: #0f2419; }
+
+/* Tap-to-talk reply indicator (driver side) — see startVoiceReply() */
+.listening-indicator {
+  position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 4500;
+  background: var(--accent); color: white; padding: 10px 18px; border-radius: 20px;
+  font-size: 14px; font-weight: 700; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  white-space: nowrap; max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis;
+}
 
 .turn-banner {
   background: var(--accent); color: white; padding: 14px 16px;
