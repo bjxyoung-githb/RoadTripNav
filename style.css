@@ -215,6 +215,17 @@ details[open] summary::after { transform: rotate(90deg); }
   display: inline-block; margin-top: 12px; padding: 4px 12px; border-radius: 999px;
   background: rgba(59,130,246,.15); color: var(--accent); font-size: 13px; font-weight: 600;
 }
+.paused-badge {
+  display: block; margin-top: 10px; padding: 6px 12px; border-radius: 8px;
+  background: rgba(245,166,35,.15); color: #f5a623; font-size: 13px; font-weight: 600;
+}
+.resume-leg-banner {
+  background: rgba(59,130,246,.12); border: 1px solid var(--accent); border-radius: 10px;
+  padding: 14px; margin-bottom: 18px;
+}
+.resume-leg-text { font-size: 13px; margin-bottom: 10px; line-height: 1.4; }
+.resume-leg-actions { display: flex; gap: 8px; }
+.resume-leg-actions button { flex: 1; }
 .share-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .share-actions button { flex: 1; min-width: 100px; }
 .comment-input-row { display: flex; gap: 8px; margin-bottom: 12px; }
