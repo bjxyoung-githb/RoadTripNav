@@ -109,6 +109,21 @@ avoids that.
   the blue route-end marker, with a warning banner, so you know you'll need
   to finish the last stretch on foot or by eye rather than being silently
   routed somewhere else.
+- **Stopping for the night mid-leg** — you don't need to do anything
+  special to stop driving partway through a leg (say, an overnight hotel
+  stop before reaching that day's actual destination). If your phone's
+  browser tab stays open, everything just picks back up on its own once
+  you're moving again the next morning — same route, same share link if
+  you were sharing. If the app gets fully closed overnight (very possible
+  after being locked for 8+ hours — phones reclaim memory from backgrounded
+  tabs), reopening it shows a **"You have an unfinished trip…"** banner
+  with a **▶ Resume Trip** button that restores your route and reconnects
+  your existing share link — family never needs a new one. If you were
+  sharing, tapping **⏸ Pause for the Night** in the Share & Trip Log panel
+  (see below) also shows family a friendly "taking a break" message
+  instead of the app's generic staleness note while you're stopped; it
+  clears itself automatically once you've driven a bit the next morning
+  (or tap **▶ Resume Sharing** yourself).
 - **Miles left / ETA / speed / elevation** — computed from your live
   position against the route, refreshed continuously as your phone reports
   new GPS fixes. Elevation comes from OpenRouteService's own route data
@@ -192,8 +207,13 @@ avoids that.
   link, which is why it stays free too. While you're sharing, your own
   screen (and only your screen — see section 7b) also shows a **👀 X
   watching now** badge, so you know if anyone's actually got the trip open.
-  Tap **Stop Sharing** (or **New / End Leg**) when you're done; the
-  passcode stops working.
+  Stopping somewhere overnight without ending the leg? Tap **⏸ Pause for
+  the Night** — family sees a friendly "taking a break" message instead of
+  a generic stale/no-update note, and it clears itself the next time you've
+  driven a bit (or tap **▶ Resume Sharing** yourself); the link keeps
+  working the whole time, nothing to resend. Tap **Stop Sharing** (or
+  **New / End Leg**) when you're actually done for good; the passcode
+  stops working.
 
 ## 4. Troubleshooting
 
@@ -220,6 +240,13 @@ avoids that.
   especially newer or rural ones. Pick the closest match and use the
   drag-the-pin step that appears afterward to correct it by hand; the
   route uses wherever the pin ends up, not the original text match.
+- **No address at all for a spot (a trailhead, campsite, backcountry
+  turnoff)** — type the coordinates straight into the Starting point or
+  Destination box instead, like `34.5625, -112.2867` (a few formats work:
+  with or without the comma, and with N/S/E/W letters instead of a minus
+  sign, like `34.5625 N, 112.2867 W`). The app recognizes it immediately —
+  no address search needed — and drops a draggable pin so you can nudge it
+  to the exact spot if needed.
 - **Starlink/cellular brief dropouts** — the app will show stale/error
   states briefly and recover automatically once the connection returns;
   your route and progress tracking don't require a constant connection
@@ -236,6 +263,16 @@ avoids that.
   the latest code, not an old one). The same goes for the shareable link —
   it has the passcode baked into it, so an old link stops working the same
   way an old passcode would; always send the current one shown in the app.
+- **The "Resume Trip" banner didn't show up after reopening the app** —
+  it only appears on the same phone/browser that was running the trip
+  (this data never leaves your device), and only if you didn't tap **End
+  Leg** before closing — that intentionally clears it, since the leg's
+  genuinely finished at that point.
+- **"Couldn't reconnect the share link from before" after tapping Resume
+  Trip** — rare; means the old trip's data is no longer reachable (for
+  example, it was manually removed in the Firebase console). Your route
+  and progress still resume fine — just tap **Start Sharing This Leg**
+  again for a new link.
 - **"📤 Share Link" doesn't do anything, or there's no share popup** — some
   browsers (mostly on desktop) don't offer that share-sheet feature; tap
   **📋 Copy** instead and paste the link into your text/email app by hand.
