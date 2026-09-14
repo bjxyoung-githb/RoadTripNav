@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.12';
+const APP_VERSION = 'v2026.09.14.13';
 
 /* ============================== UTILITIES ============================== */
 
@@ -159,6 +159,12 @@ function loadSettings() {
     orsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false,
     locationSource: 'device', // 'device' (this device's own GPS, default) | 'relay' (phone via local relay, for PCs without GPS)
     relayUrl: '',
+    // Route preference — see calcRouteWithPreference():
+    //  'fastest'        — plain fastest route, highways/interstates used as needed (old default behavior)
+    //  'balanced'       — back roads if the all-back-roads route isn't much slower (within backRoadsToleranceMinutes)
+    //  'avoid-highways' — always avoid highways/interstates, no matter the time cost
+    routePreference: 'fastest',
+    backRoadsToleranceMinutes: 15, // only used by 'balanced'
   };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}')); }
   catch (e) { return defaults; }
@@ -293,19 +299,25 @@ async function orsGeocodeStructured(text, focus) {
   return (json.features || []).map(mapGeocodeFeature);
 }
 
-async function orsRoute(start, end) {
+async function orsRoute(start, end, opts) {
+  opts = opts || {};
   const key = state.settings.orsKey;
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
+  const body = {
+    coordinates: [[start.lon, start.lat], [end.lon, end.lat]],
+    units: 'mi',
+    instructions: true,
+    language: 'en',
+    elevation: true, // adds a 3rd [lon,lat,ele(m)] value per point — used for the live Elevation stat
+  };
+  // avoidHighways steers ORS off limited-access highways/motorways entirely
+  // — see calcRouteWithPreference() for how this feeds the route-preference
+  // setting (always-back-roads, or back-roads-if-not-much-slower).
+  if (opts.avoidHighways) body.options = { avoid_features: ['highways'] };
   const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
     method: 'POST',
     headers: { 'Authorization': key, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      coordinates: [[start.lon, start.lat], [end.lon, end.lat]],
-      units: 'mi',
-      instructions: true,
-      language: 'en',
-      elevation: true, // adds a 3rd [lon,lat,ele(m)] value per point — used for the live Elevation stat
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => '');
@@ -345,6 +357,93 @@ async function orsRoute(start, end) {
   return { coords, cumDist, cumDur, steps, totalDist, totalDur };
 }
 
+// Calculates a route according to the user's route-preference setting (see
+// Settings → Route preference) rather than always taking ORS's plain
+// fastest route. Used everywhere a route gets calculated: the main
+// Calculate Route button, automatic off-route rerouting, and
+// tap-anywhere-for-ETA — so however you've told it to route, it routes
+// that way everywhere, consistently.
+//
+//  'fastest'        — one call, ORS's normal fastest route. Unchanged
+//                      behavior from before this setting existed.
+//  'avoid-highways' — one call with avoid_features:['highways'], so the
+//                      route never uses limited-access highways/interstates
+//                      at all, regardless of time cost. If ORS can't find
+//                      any route avoiding highways (rare — e.g. the only
+//                      road for some stretch is an interstate), falls back
+//                      to the plain fastest route rather than failing.
+//  'balanced'       — calculates BOTH the fastest route and the
+//                      all-back-roads route, then uses the back-roads one
+//                      only if it isn't too much slower (within
+//                      backRoadsToleranceMinutes of the fastest route) —
+//                      this is the "back roads if quicker, or if close in
+//                      time" behavior. Tags the result so the caller can
+//                      tell the user which way it went and by how much;
+//                      see describeRouteChoice().
+async function calcRouteWithPreference(start, dest) {
+  const pref = state.settings.routePreference || 'fastest';
+
+  if (pref === 'avoid-highways') {
+    try {
+      const route = await orsRoute(start, dest, { avoidHighways: true });
+      route.routeChoice = 'avoid-highways';
+      return route;
+    } catch (e) {
+      toast("Couldn't find a back-roads-only route there — using the regular route instead.", 6000);
+      const route = await orsRoute(start, dest);
+      route.routeChoice = 'avoid-highways-unavailable';
+      return route;
+    }
+  }
+
+  if (pref === 'balanced') {
+    const fastest = await orsRoute(start, dest);
+    let backRoads = null;
+    try {
+      backRoads = await orsRoute(start, dest, { avoidHighways: true });
+    } catch (e) {
+      // No all-back-roads path available for this trip — just go with
+      // fastest, nothing to compare against.
+    }
+    if (backRoads) {
+      const deltaSec = backRoads.totalDur - fastest.totalDur;
+      const toleranceSec = (state.settings.backRoadsToleranceMinutes || 0) * 60;
+      if (deltaSec <= toleranceSec) {
+        backRoads.routeChoice = 'balanced-backroads';
+        backRoads.backRoadsDeltaSec = deltaSec;
+        return backRoads;
+      }
+      fastest.routeChoice = 'balanced-fastest';
+      fastest.backRoadsDeltaSec = deltaSec;
+      return fastest;
+    }
+    fastest.routeChoice = 'balanced-fastest-only';
+    return fastest;
+  }
+
+  const route = await orsRoute(start, dest);
+  route.routeChoice = 'fastest';
+  return route;
+}
+
+// Turns calcRouteWithPreference()'s tagging into a one-line toast so the
+// driver can see *why* they got the route they did — only for the
+// 'balanced' outcomes, since 'fastest' and 'avoid-highways' are
+// deterministic from the setting and don't need explaining every time.
+function describeRouteChoice(route) {
+  if (route.routeChoice === 'balanced-backroads') {
+    const extra = Math.round((route.backRoadsDeltaSec || 0) / 60);
+    return extra > 0
+      ? `Took back roads instead of the interstate — about ${extra} min longer.`
+      : 'Took back roads instead of the interstate.';
+  }
+  if (route.routeChoice === 'balanced-fastest') {
+    const extra = Math.round((route.backRoadsDeltaSec || 0) / 60);
+    return `Used the fastest route — an all-back-roads route would add about ${extra} min.`;
+  }
+  return null;
+}
+
 // Turns a tapped lat/lon into a human place name (e.g. "Kingman, AZ") for
 // the tap-for-ETA popup — see handleMapTapForEta(). Best-effort: a failure
 // here (or no match) just means the popup shows without a name, never
@@ -382,7 +481,7 @@ async function handleMapTapForEta(lat, lon) {
   state.etaTapMarker = marker;
   try {
     const [route, label, weather] = await Promise.all([
-      orsRoute(state.loc, { lat, lon }),
+      calcRouteWithPreference(state.loc, { lat, lon }),
       orsReverseGeocode(lat, lon),
       nwsCurrentConditionsAt(lat, lon),
     ]);
@@ -1001,13 +1100,15 @@ async function maybeReroute(offRouteMiles, curLat, curLon) {
   speak('Recalculating route.');
   try {
     const dest = state.route.destForReroute;
-    const newRoute = await orsRoute({ lat: curLat, lon: curLon }, dest);
+    const newRoute = await calcRouteWithPreference({ lat: curLat, lon: curLon }, dest);
     newRoute.destForReroute = dest;
     state.route = newRoute;
     state.announced = new Set();
     state.arrivalAnnounced = false;
     drawRoute();
     persistActiveLeg(); // the route just changed — keep the overnight-resume snapshot current
+    const choiceMsg = describeRouteChoice(newRoute);
+    if (choiceMsg) toast(choiceMsg, 6000);
     return true;
   } catch (e) {
     toast('Reroute failed: ' + e.message, 6000);
@@ -3115,7 +3216,7 @@ function wireSetupScreen() {
     calcBtn.disabled = true;
     calcBtn.textContent = 'Calculating route…';
     try {
-      const route = await orsRoute(start, dest);
+      const route = await calcRouteWithPreference(start, dest);
       route.destForReroute = dest;
       state.route = route;
       state.currentStepIndex = 0;
@@ -3146,6 +3247,8 @@ function wireSetupScreen() {
       drawRoute();
       onLocationUpdate();
       renderSharePanel();
+      const choiceMsg = describeRouteChoice(route);
+      if (choiceMsg) toast(choiceMsg, 6000);
     } catch (e) {
       errEl.textContent = e.message;
     } finally {
@@ -3172,9 +3275,22 @@ function wireSettingsModal() {
   const locRelayRadio = document.getElementById('locSourceRelay');
   const relayUrlRow = document.getElementById('relayUrlRow');
   const relayUrlInput = document.getElementById('relayUrlInput');
+  const routePrefFastestRadio = document.getElementById('routePrefFastest');
+  const routePrefBalancedRadio = document.getElementById('routePrefBalanced');
+  const routePrefAvoidRadio = document.getElementById('routePrefAvoid');
+  const backRoadsToleranceRow = document.getElementById('backRoadsToleranceRow');
+  const backRoadsToleranceInput = document.getElementById('backRoadsToleranceInput');
 
   function syncRelayRowVisibility() {
     relayUrlRow.classList.toggle('hidden', !locRelayRadio.checked);
+  }
+  function syncToleranceRowVisibility() {
+    backRoadsToleranceRow.classList.toggle('hidden', !routePrefBalancedRadio.checked);
+  }
+  function checkedRoutePrefRadio() {
+    if (routePrefBalancedRadio.checked) return 'balanced';
+    if (routePrefAvoidRadio.checked) return 'avoid-highways';
+    return 'fastest';
   }
 
   function openModal() {
@@ -3184,12 +3300,21 @@ function wireSettingsModal() {
     (state.settings.locationSource === 'relay' ? locRelayRadio : locDeviceRadio).checked = true;
     relayUrlInput.value = state.settings.relayUrl || '';
     syncRelayRowVisibility();
+    const pref = state.settings.routePreference || 'fastest';
+    routePrefFastestRadio.checked = pref === 'fastest';
+    routePrefBalancedRadio.checked = pref === 'balanced';
+    routePrefAvoidRadio.checked = pref === 'avoid-highways';
+    backRoadsToleranceInput.value = state.settings.backRoadsToleranceMinutes != null ? state.settings.backRoadsToleranceMinutes : 15;
+    syncToleranceRowVisibility();
     modal.classList.remove('hidden');
   }
   openBtn.addEventListener('click', openModal);
   closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
   locDeviceRadio.addEventListener('change', syncRelayRowVisibility);
   locRelayRadio.addEventListener('change', syncRelayRowVisibility);
+  routePrefFastestRadio.addEventListener('change', syncToleranceRowVisibility);
+  routePrefBalancedRadio.addEventListener('change', syncToleranceRowVisibility);
+  routePrefAvoidRadio.addEventListener('change', syncToleranceRowVisibility);
 
   saveBtn.addEventListener('click', () => {
     state.settings.orsKey = orsInput.value.trim();
@@ -3200,6 +3325,8 @@ function wireSettingsModal() {
     const locationSettingChanged = newLocationSource !== state.settings.locationSource || newRelayUrl !== state.settings.relayUrl;
     state.settings.locationSource = newLocationSource;
     state.settings.relayUrl = newRelayUrl;
+    state.settings.routePreference = checkedRoutePrefRadio();
+    state.settings.backRoadsToleranceMinutes = backRoadsToleranceInput.value ? parseInt(backRoadsToleranceInput.value, 10) : 0;
     saveSettings(state.settings);
     modal.classList.add('hidden');
     refreshCalcButton();
@@ -3373,6 +3500,10 @@ const HELP_TOPICS = {
         the dashboard.</li>
         <li><b>👀 Watch someone else's shared trip</b> is for when you're the
         one receiving a trip link/passcode, not planning your own.</li>
+        <li>Prefer back roads over the interstate? <b>Settings → Route
+        preference</b> can favor back roads whenever it's not much slower,
+        or avoid highways entirely — applies here, to automatic rerouting,
+        and to tap-anywhere-for-ETA.</li>
       </ul>
       <p>Tap the <b>?</b> next to any field above for more detail on that one.</p>`,
   },
