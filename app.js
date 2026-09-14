@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.2';
+const APP_VERSION = 'v2026.09.14.7';
 
 /* ============================== UTILITIES ============================== */
 
@@ -60,6 +60,23 @@ function fmtClockFromNowPlus(sec) {
   if (sec == null || isNaN(sec)) return '–';
   const d = new Date(Date.now() + sec * 1000);
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+// Label shown under the ETA time whenever arrival falls on a different
+// calendar day than right now — on a multi-day leg (hundreds/thousands of
+// miles), "9:30 AM" alone reads as "this morning" even when it's actually
+// a day or more out. Returns '' for a same-day ETA, since the plain time
+// is unambiguous there.
+function etaDateLabel(sec) {
+  if (sec == null || isNaN(sec)) return '';
+  const now = new Date();
+  const eta = new Date(Date.now() + sec * 1000);
+  const sameDay = eta.getFullYear() === now.getFullYear() && eta.getMonth() === now.getMonth() && eta.getDate() === now.getDate();
+  if (sameDay) return '';
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const isTomorrow = eta.getFullYear() === tomorrow.getFullYear() && eta.getMonth() === tomorrow.getMonth() && eta.getDate() === tomorrow.getDate();
+  if (isTomorrow) return 'Tomorrow';
+  return eta.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 function debounce(fn, ms) {
@@ -174,9 +191,10 @@ const state = {
   },
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
+  etaTapMarker: null, // marker for the driver-side tap-anywhere-for-ETA popup — see handleMapTapForEta()
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
-  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, viewerCount: 0, events: [], lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false },
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -325,6 +343,59 @@ async function orsRoute(start, end) {
   }
 
   return { coords, cumDist, cumDur, steps, totalDist, totalDur };
+}
+
+// Turns a tapped lat/lon into a human place name (e.g. "Kingman, AZ") for
+// the tap-for-ETA popup — see handleMapTapForEta(). Best-effort: a failure
+// here (or no match) just means the popup shows without a name, never
+// blocks showing the ETA itself.
+async function orsReverseGeocode(lat, lon) {
+  const key = state.settings.orsKey;
+  if (!key) return null;
+  try {
+    const url = `https://api.openrouteservice.org/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lat=${lat}&point.lon=${lon}&size=1`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const f = json.features && json.features[0];
+    return f ? f.properties.label : null;
+  } catch (e) { return null; }
+}
+
+// Tap-anywhere-for-ETA: calculates a fresh, one-off route from wherever you
+// are right now to wherever you tapped on the map — on your planned route,
+// a detour off it, whatever — and shows the drive time and a clock-time
+// ETA. This is a separate, throwaway calculation from orsRoute() each
+// time; it never touches or replaces your actual navigation route
+// (state.route). See initMap()'s click handler for what triggers this, and
+// handleWatchMapTapForEta() for the viewer-side counterpart (which can't
+// do live routing since viewers have no ORS key of their own, so it
+// estimates instead using the route data already shared with them).
+async function handleMapTapForEta(lat, lon) {
+  if (!state.settings.orsKey) { toast('Add your OpenRouteService API key in Settings to use tap-for-ETA.', 5000); return; }
+  if (!state.loc) { toast('Waiting for your own GPS position first.', 4000); return; }
+  if (!state.map) return;
+  if (state.etaTapMarker) { state.map.removeLayer(state.etaTapMarker); state.etaTapMarker = null; }
+  const marker = L.marker([lat, lon]).addTo(state.map)
+    .bindPopup('<div style="min-width:160px;">Calculating…</div>')
+    .openPopup();
+  state.etaTapMarker = marker;
+  try {
+    const [route, label] = await Promise.all([
+      orsRoute(state.loc, { lat, lon }),
+      orsReverseGeocode(lat, lon),
+    ]);
+    const etaTime = fmtClockFromNowPlus(route.totalDur);
+    const etaDate = etaDateLabel(route.totalDur);
+    marker.setPopupContent(`
+      <div style="min-width:180px;">
+        <b>📍 ${escapeHtml(label || 'This spot')}</b><br>
+        ${fmtMiles(route.totalDist)} · ${fmtDurationShort(route.totalDur)} drive<br>
+        <b>ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>
+      </div>`);
+  } catch (e) {
+    marker.setPopupContent(`<div style="min-width:160px;">Couldn't find a route there: ${escapeHtml(e.message)}</div>`);
+  }
 }
 
 /* ============================== LOCATION (this device's own GPS) ============================== */
@@ -959,6 +1030,7 @@ async function onLocationUpdate() {
 
   const remainingDur = Math.max(0, state.route.totalDur - state.route.cumDur[idx]);
   document.getElementById('statEta').textContent = fmtClockFromNowPlus(remainingDur);
+  document.getElementById('statEtaDate').textContent = etaDateLabel(remainingDur);
 
   const speedMph = typeof cur.speed === 'number' && cur.speed >= 0 ? cur.speed * MPS_TO_MPH : null;
   document.getElementById('statSpeed').textContent = speedMph != null ? Math.round(speedMph) : '–';
@@ -1105,6 +1177,14 @@ function initMap() {
       if (state.recenterBtnDiv) state.recenterBtnDiv.classList.remove('hidden');
     }
   });
+
+  // Tap-anywhere-for-ETA — see handleMapTapForEta(). Leaflet doesn't fire
+  // 'click' after an actual drag, and marker/popup clicks stop propagation
+  // before reaching the map, so this only fires for a genuine tap on open
+  // map area.
+  state.map.on('click', (e) => { handleMapTapForEta(e.latlng.lat, e.latlng.lng); });
+
+  addMapHelpControl(state.map, 'map-driver');
 }
 
 // A small on-map button that appears once the map has been manually panned
@@ -1329,15 +1409,21 @@ async function generateUniquePin(db, uid) {
 // rather than [lat, lon] pairs because Firestore flatly rejects an array
 // that contains other arrays ("nested arrays are not supported") — an
 // array of maps is fine, an array of arrays is not.
-function sampleRouteForShare(coords, maxPoints) {
+//
+// Each point also carries cumDist/cumDur (miles / seconds from the route's
+// start) so a viewer — who has no ORS key of their own — can still estimate
+// a tap-for-ETA by comparing the tapped point's cumDist/cumDur against the
+// traveler's own nearest sample point. See handleWatchMapTapForEta().
+function sampleRouteForShare(route, maxPoints) {
   maxPoints = maxPoints || 300;
-  const toPoint = (c) => ({ lat: c[1], lon: c[0] });
-  if (coords.length <= maxPoints) return coords.map(toPoint);
+  const { coords, cumDist, cumDur } = route;
+  const toPoint = (i) => ({ lat: coords[i][1], lon: coords[i][0], cumDist: cumDist[i], cumDur: cumDur[i] });
+  if (coords.length <= maxPoints) return coords.map((c, i) => toPoint(i));
   const out = [];
   const step = (coords.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
     const idx = Math.round(i * step);
-    out.push(toPoint(coords[idx]));
+    out.push(toPoint(idx));
   }
   return out;
 }
@@ -1353,7 +1439,7 @@ async function startSharing() {
   try {
     const { db, uid } = await initFirebase();
     const pin = await generateUniquePin(db, uid);
-    const routeCoords = sampleRouteForShare(state.route.coords, 300);
+    const routeCoords = sampleRouteForShare(state.route, 300);
     await db.collection('trips').doc(pin).set({
       ownerUid: uid,
       destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
@@ -1377,8 +1463,10 @@ async function startSharing() {
     rememberOwnTrip(pin);
     subscribeOwnEvents(pin);
     subscribeViewerCount(pin);
+    subscribeViewerMessages(pin);
     persistActiveLeg(); // include this pin in the overnight-resume snapshot
     renderSharePanel();
+    renderViewerMessages(); // shows the (empty) panel right away rather than waiting on the first snapshot
     toast('Sharing started — passcode ' + pin, 6000);
   } catch (e) {
     panel.innerHTML = `<span class="muted">Couldn't start sharing: ${e.message}</span>`;
@@ -1390,6 +1478,7 @@ async function stopSharing() {
   const pin = sh.pin;
   if (sh.unsubEvents) { sh.unsubEvents(); sh.unsubEvents = null; }
   if (sh.unsubViewers) { sh.unsubViewers(); sh.unsubViewers = null; }
+  if (sh.unsubMessages) { sh.unsubMessages(); sh.unsubMessages = null; }
   if (pin && state.fb) {
     try {
       await state.fb.db.collection('trips').doc(pin).set(
@@ -1398,10 +1487,12 @@ async function stopSharing() {
   }
   clearMarkers(state.eventMarkers);
   sh.active = false; sh.pin = null; sh.ownerUid = null; sh.events = [];
+  sh.messages = []; sh.messagesLoaded = false;
   sh.lastPushAt = 0; sh.lastPushLoc = null; sh.viewerCount = 0;
   sh.paused = false; sh.pausedAt = 0; sh.pausedLoc = null;
   persistActiveLeg(); // drop the pin from the overnight-resume snapshot, keep the route
   renderSharePanel();
+  renderViewerMessages(); // hides the messages panel now that sharing's off
   toast('Sharing stopped.', 3000);
 }
 
@@ -1497,6 +1588,81 @@ function subscribeOwnEvents(pin) {
       renderSharePanel();
       renderOwnEventMarkers(events);
     }, (e) => toast('Trip log sync error: ' + e.message, 5000));
+}
+
+// Messages family sends FROM the watch screen TO the driver — see
+// sendViewerMessage() for the other end. Rendered in a panel right below
+// the driver's map (renderViewerMessages()) and, for a genuinely new
+// message, read aloud (announceViewerMessage()).
+//
+// A Firestore listener's very first callback always reports every existing
+// document as "added" — there's no way to distinguish "this just arrived"
+// from "this already existed" on that first call alone. sh.messagesLoaded
+// tracks whether we've been through that first callback yet, so messages
+// already sitting there when you start/resume sharing (e.g. overnight,
+// while paused) get shown silently instead of read aloud all at once.
+function subscribeViewerMessages(pin) {
+  const sh = state.share;
+  if (sh.unsubMessages) { sh.unsubMessages(); sh.unsubMessages = null; }
+  sh.messages = [];
+  sh.messagesLoaded = false;
+  sh.unsubMessages = state.fb.db.collection('trips').doc(pin).collection('messages')
+    .orderBy('createdAt', 'asc')
+    .onSnapshot((snap) => {
+      const wasAlreadyLoaded = sh.messagesLoaded;
+      sh.messagesLoaded = true;
+      snap.docChanges().forEach((change) => {
+        if (change.type !== 'added') return;
+        const d = change.doc.data();
+        const msg = {
+          id: change.doc.id,
+          text: d.text || '',
+          senderName: d.senderName || 'Family',
+          createdAt: (d.createdAt && typeof d.createdAt.toMillis === 'function') ? d.createdAt.toMillis() : Date.now(),
+        };
+        sh.messages.push(msg);
+        if (wasAlreadyLoaded) announceViewerMessage(msg);
+      });
+      if (snap.docChanges().length) renderViewerMessages();
+    }, () => { /* best effort — messages resume once the connection is back */ });
+}
+
+function renderViewerMessages() {
+  const panel = document.getElementById('viewerMessagesPanel');
+  const list = document.getElementById('viewerMessagesList');
+  if (!panel || !list) return;
+  if (!state.share.active) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const msgs = state.share.messages;
+  if (!msgs.length) {
+    list.innerHTML = '<div class="muted viewer-message-empty">No messages yet.</div>';
+    return;
+  }
+  list.innerHTML = msgs.slice().reverse().slice(0, 30).map((m) => {
+    const when = new Date(m.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return `<div class="viewer-message">
+      <div class="viewer-message-meta"><b>${escapeHtml(m.senderName)}</b> · ${when}</div>
+      <div class="viewer-message-text">${escapeHtml(m.text)}</div>
+    </div>`;
+  }).join('');
+}
+
+// Reads an incoming message aloud — but speak() always cancels whatever's
+// currently playing before starting a new utterance (see speak()'s own
+// comment), so speaking a message the instant it arrives could cut off an
+// in-progress turn-by-turn instruction mid-sentence. Rather than risk that,
+// check whether speech is already playing first; if so, wait a moment and
+// check again (a turn announcement is a few seconds at most), and only give
+// up on voice for this one — it's still sitting in the panel to read — if
+// it's still busy after a few tries.
+function announceViewerMessage(msg, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 4;
+  if (!voiceSupported() || !state.settings.voiceEnabled) return;
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    if (attemptsLeft > 0) setTimeout(() => announceViewerMessage(msg, attemptsLeft - 1), 1500);
+    return;
+  }
+  speak(`Message from ${msg.senderName}: ${msg.text}`);
 }
 
 // Loads an image file into an <img> via a blob URL so it can be drawn to a
@@ -2075,6 +2241,63 @@ function wireWatchScreen() {
     watchTrip(pin);
   });
   pinInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') goBtn.click(); });
+
+  wireViewerMessageBox();
+}
+
+// Lets family send a short message to the driver from the watch screen —
+// the driver sees it in a panel right below their map and (traffic
+// permitting — see announceViewerMessage()) hears it read aloud. There's no
+// login here, just a self-typed name, so the driver knows who's writing:
+// each device remembers what was typed last time (see LS_VIEWER_NAME) so
+// it's a one-time thing per phone, not a re-type-your-name-every-trip
+// thing, but it's still just a label someone chose for themselves rather
+// than a verified identity — fine for a family trip, not meant as
+// anything stronger.
+const LS_VIEWER_NAME = 'rtnav_viewer_name_v1';
+
+function loadViewerName() {
+  try { return localStorage.getItem(LS_VIEWER_NAME) || ''; } catch (e) { return ''; }
+}
+function saveViewerName(name) {
+  try { localStorage.setItem(LS_VIEWER_NAME, name); } catch (e) { /* localStorage unavailable — just means re-typing the name next time */ }
+}
+
+function wireViewerMessageBox() {
+  const nameInput = document.getElementById('watchNameInput');
+  const msgInput = document.getElementById('watchMessageInput');
+  const sendBtn = document.getElementById('watchSendMsgBtn');
+  if (!nameInput || !msgInput || !sendBtn) return;
+  nameInput.value = loadViewerName();
+  sendBtn.addEventListener('click', sendViewerMessage);
+  msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendViewerMessage(); });
+}
+
+async function sendViewerMessage() {
+  const nameInput = document.getElementById('watchNameInput');
+  const msgInput = document.getElementById('watchMessageInput');
+  const sendBtn = document.getElementById('watchSendMsgBtn');
+  const name = (nameInput.value || '').trim().slice(0, 40) || 'Family';
+  const text = (msgInput.value || '').trim().slice(0, 300);
+  if (!text) { msgInput.focus(); return; }
+  if (!state.watch.pin) { toast("Not connected to a trip right now.", 3000); return; }
+  saveViewerName(name);
+  sendBtn.disabled = true;
+  try {
+    const { db, uid } = await initFirebase();
+    await db.collection('trips').doc(state.watch.pin).collection('messages').add({
+      text,
+      senderName: name,
+      senderUid: uid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    msgInput.value = '';
+    toast('Message sent.', 2500);
+  } catch (e) {
+    toast("Couldn't send: " + e.message, 5000);
+  } finally {
+    sendBtn.disabled = false;
+  }
 }
 
 // Reads a ?watch=123456 passcode off the page's own URL — the other half
@@ -2184,6 +2407,7 @@ function stopWatching() {
   if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
   state.watch.routeLine = null;
   state.watch.liveMarker = null;
+  state.watch.etaTapMarker = null; // destroyed along with the map above
   state.watch.fullscreen = false;
   document.getElementById('watchScreen').classList.remove('watch-fullscreen');
 }
@@ -2327,6 +2551,72 @@ function initWatchMap() {
 
   if (state.watch.trip) renderWatchTrip();
   if (state.watch.events) renderWatchEvents(state.watch.events);
+
+  // Tap-anywhere-for-ETA, viewer side — see handleWatchMapTapForEta(). A
+  // viewer has no ORS key of their own, so this estimates off the
+  // cumDist/cumDur already baked into each shared route sample point
+  // instead of doing live routing.
+  map.on('click', (e) => { handleWatchMapTapForEta(e.latlng.lat, e.latlng.lng); });
+
+  addMapHelpControl(map, 'map-watch');
+}
+
+// Finds the sample point in a shared route (as produced by
+// sampleRouteForShare()) nearest a given lat/lon, straight-line. Returns
+// {point, dist} where dist is in miles, or null if there are no points.
+function nearestSharedRoutePoint(routeCoords, lat, lon) {
+  if (!routeCoords || !routeCoords.length) return null;
+  let best = null, bestD = Infinity;
+  for (const p of routeCoords) {
+    const d = haversineMiles(lat, lon, p.lat, p.lon);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  return { point: best, dist: bestD };
+}
+
+// Viewer-side counterpart to handleMapTapForEta(). Viewers never have an
+// ORS key, so there's no live routing available — instead this estimates
+// using the cumDist/cumDur that ride along on every shared route sample
+// point: snap the tapped spot and the traveler's current position each to
+// their nearest sample, then the difference in cumDur is the estimated
+// remaining drive time. This only works well for taps at or near the
+// shared route line itself; a tap well off of it still snaps to the
+// nearest point on the route, so the popup calls out the straight-line
+// distance from the tap to that snapped point when it's large enough to
+// matter, rather than silently presenting a misleading estimate.
+function handleWatchMapTapForEta(lat, lon) {
+  const trip = state.watch.trip;
+  const map = state.watch.map;
+  if (!trip || !map) return;
+  if (state.watch.etaTapMarker) { map.removeLayer(state.watch.etaTapMarker); state.watch.etaTapMarker = null; }
+  const marker = L.marker([lat, lon]).addTo(map);
+  state.watch.etaTapMarker = marker;
+
+  if (!trip.routeCoords || !trip.routeCoords.length || !trip.lastLocation) {
+    marker.bindPopup('<div style="min-width:160px;">Not enough route data yet to estimate this.</div>').openPopup();
+    return;
+  }
+  const tapped = nearestSharedRoutePoint(trip.routeCoords, lat, lon);
+  const current = nearestSharedRoutePoint(trip.routeCoords, trip.lastLocation.lat, trip.lastLocation.lon);
+  if (!tapped || !current) {
+    marker.bindPopup('<div style="min-width:160px;">Couldn\'t estimate this spot.</div>').openPopup();
+    return;
+  }
+  const remainingSec = tapped.point.cumDur - current.point.cumDur;
+  const aheadMiles = tapped.point.cumDist - current.point.cumDist;
+  const offRouteNote = tapped.dist > 3
+    ? `<br><span class="muted" style="font-size:12px;">(nearest point on their route is ${fmtMiles(tapped.dist)} from your tap — estimate only)</span>`
+    : '';
+
+  let body;
+  if (remainingSec < -60) {
+    body = `<b>Already passed</b> — about ${fmtDurationShort(-remainingSec)} ago`;
+  } else {
+    const etaTime = fmtClockFromNowPlus(Math.max(0, remainingSec));
+    const etaDate = etaDateLabel(Math.max(0, remainingSec));
+    body = `${fmtMiles(Math.max(0, aheadMiles))} ahead of them · ${fmtDurationShort(Math.max(0, remainingSec))} more driving<br><b>Est. ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>`;
+  }
+  marker.bindPopup(`<div style="min-width:190px;">${body}${offRouteNote}</div>`).openPopup();
 }
 
 function renderWatchStatus(msg) {
@@ -2823,9 +3113,417 @@ async function resumeSharing(pin) {
     rememberOwnTrip(pin);
     subscribeOwnEvents(pin);
     subscribeViewerCount(pin);
+    subscribeViewerMessages(pin);
+    renderViewerMessages();
   } catch (e) {
     toast("Couldn't reconnect sharing: " + e.message, 6000);
   }
+}
+
+/* ============================== CONTEXT-SENSITIVE HELP ============================== */
+
+// One entry per "?" button in the app (data-help="<key>" on the button, or
+// the topic name passed to addMapHelpControl()/currentHelpTopicForScreen()).
+// Keeping these all in one place makes it easy to keep the wording in sync
+// with README.md and with each other.
+const HELP_TOPICS = {
+  'setup-overview': {
+    title: 'Planning a leg',
+    html: `
+      <p>A <b>leg</b> is one stretch of the trip — from wherever you start to one
+      destination. Plan a new leg here before each drive.</p>
+      <ul>
+        <li><b>Starting point</b> defaults to your phone's live GPS. Tap "Set
+        manually" to use a different spot instead (handy for planning ahead
+        before you're actually there).</li>
+        <li><b>Destination</b> accepts a typed address/city with autocomplete,
+        or raw coordinates like <code>34.5625, -112.2867</code> for spots with
+        no address.</li>
+        <li><b>Label this leg</b> is just for your own reference in the saved
+        legs list below.</li>
+        <li>Tap <b>Calculate Route</b> once a destination is set to head to
+        the dashboard.</li>
+        <li><b>👀 Watch someone else's shared trip</b> is for when you're the
+        one receiving a trip link/passcode, not planning your own.</li>
+      </ul>
+      <p>Tap the <b>?</b> next to any field above for more detail on that one.</p>`,
+  },
+  'resume-banner': {
+    title: 'Resume Trip banner',
+    html: `
+      <p>This shows up if you had a route/leg in progress that never got a
+      proper <b>End Leg</b> — most likely because the app or browser got
+      fully closed (very possible after 8+ hours backgrounded overnight).</p>
+      <p>Tap <b>▶ Resume Trip</b> to pick the exact same route back up,
+      including reconnecting your existing share link if you were sharing —
+      nobody needs a new link. Tap <b>Discard</b> if that leg is done and you
+      don't want it back.</p>`,
+  },
+  'start-point': {
+    title: 'Starting point',
+    html: `
+      <p>By default this uses your phone's live GPS position the moment you
+      calculate the route — you don't need to type anything.</p>
+      <p>Tap <b>Set manually</b> to search for a different starting spot
+      instead (for example, planning tomorrow's leg tonight from home). You
+      can drag the pin afterward to fine-tune it, or type coordinates
+      directly if the spot has no address.</p>`,
+  },
+  destination: {
+    title: 'Destination',
+    html: `
+      <p>Type an address, city, or landmark name and pick from the
+      suggestions — you can drag the pin afterward if it's not exactly
+      right.</p>
+      <p>No address for the spot (a trailhead, campsite, backcountry
+      turnoff)? Type coordinates straight in instead, like
+      <code>34.5625, -112.2867</code> or <code>34.5625° N, 112.2867° W</code>
+      — the app recognizes it immediately, no search needed.</p>`,
+  },
+  'saved-legs': {
+    title: 'Saved legs',
+    html: `
+      <p>Every leg you calculate is saved here automatically so you can
+      re-run it later without re-entering the destination — handy for a
+      route you plan more than once, or want to double check before you
+      actually drive it.</p>`,
+  },
+  'dashboard-overview': {
+    title: 'The drive dashboard',
+    html: `
+      <p>This is your live view while driving a calculated leg.</p>
+      <ul>
+        <li>The banner at the top gives your next turn; the row below shows
+        miles left, ETA (with a date if it won't arrive today), speed, and
+        elevation.</li>
+        <li>Tap anywhere on the map to see the drive time/ETA to that spot —
+        on your route or off it entirely.</li>
+        <li>While you're sharing, a <b>💬 Messages from Family</b> panel
+        appears right below the map for messages sent from a viewer's
+        screen — read aloud automatically too.</li>
+        <li>The sections below (Fuel, Weather, Alerts, Stops, Mountains,
+        Daylight, Drive Timer, full directions, and Share &amp; Trip Log)
+        each have their own <b>?</b> for details.</li>
+        <li><b>🏁 End This Leg / Plan Next Leg</b> wraps up this leg and
+        takes you back to planning the next one.</li>
+      </ul>`,
+  },
+  'map-driver': {
+    title: 'Using the map',
+    html: `
+      <ul>
+        <li>The map follows your position automatically as you drive; drag
+        it to look around and a <b>⌖ Recenter</b> button appears to snap
+        back.</li>
+        <li><b>Tap anywhere</b> — a town ahead, a detour, anywhere — to see
+        the drive distance/time and a clock ETA to that exact spot. This
+        runs a fresh calculation each time and never changes your actual
+        route.</li>
+        <li>The button in the top-right cycles Satellite/Street/Auto (Auto
+        switches based on your speed).</li>
+        <li><b>⛶ Full Map</b> (top-left) expands the map to fill the
+        screen.</li>
+      </ul>`,
+  },
+  'fuel-planner': {
+    title: 'Fuel Planner',
+    html: `
+      <p>Set your vehicle's driving range (on a full tank) in Settings to
+      turn this on. It flags when the nearest known gas station ahead is
+      farther than about 80% of that range, so you get a heads-up before
+      you'd be cutting it close.</p>
+      <p>It has no idea what your actual fuel level is — it only compares
+      distance-to-next-station against your range.</p>`,
+  },
+  'weather-ahead': {
+    title: 'Weather Ahead',
+    html: `
+      <p>Forecasts from the National Weather Service (free, US only) at your
+      current spot and two points further along your remaining route, each
+      timed to when you're expected to actually be there.</p>`,
+  },
+  alerts: {
+    title: 'Road & Weather Alerts',
+    html: `
+      <p>Active NWS alerts — winter storms, high wind, flooding, and similar
+      — near your current spot and those same points ahead.</p>
+      <p>There's no free, nationwide live-traffic-incident feed, so this is
+      weather-based only, not accidents or road closures.</p>`,
+  },
+  'upcoming-stops': {
+    title: 'Upcoming Stops',
+    html: `
+      <p>Named gas stations, restaurants, rest areas, viewpoints, and
+      attractions within about 15 miles roughly ahead of you, from
+      OpenStreetMap's free map data.</p>`,
+  },
+  'mountains-nearby': {
+    title: 'Mountains Nearby',
+    html: `
+      <p>Named peaks with known elevation within about 40 miles of your
+      current position, with distance and compass direction. The 6 closest
+      are also pinned right on the map with an always-visible label.</p>
+      <p>This is straight-line distance, not a guaranteed line-of-sight — a
+      closer ridge could still be blocking your actual view of a listed
+      peak.</p>`,
+  },
+  daylight: {
+    title: 'Daylight',
+    html: `
+      <p>Sunrise/sunset times and hours of daylight left at your current
+      location — handy for judging whether you'll reach a scenic stretch or
+      campsite while it's still light out.</p>`,
+  },
+  'drive-timer': {
+    title: 'Drive Timer',
+    html: `
+      <p>Tracks how long you've been driving continuously (based on GPS
+      speed) and pops up a reminder once you hit the rest-break interval you
+      set in Settings (0 turns it off).</p>`,
+  },
+  'turn-by-turn': {
+    title: 'Full turn-by-turn',
+    html: `
+      <p>The complete list of directions for this leg, with the current step
+      highlighted. Spoken prompts (once voice guidance is enabled) announce
+      each turn about a mile ahead and again right before it.</p>`,
+  },
+  'share-trip-log': {
+    title: 'Share & Trip Log',
+    html: `
+      <ul>
+        <li>Tap <b>Start Sharing This Leg</b> to get a one-tap link (plus a
+        6-digit passcode as backup) for family. <b>📤 Share Link</b> sends it
+        through your phone's own share sheet; <b>📋 Copy</b> copies it by
+        hand.</li>
+        <li>Whoever gets the link just taps it — no typing, no account,
+        straight into watching your live position, photos, comments, and
+        weather.</li>
+        <li>Use 📷/🎥/💬 to drop a geotagged photo, video link, or comment —
+        each is tagged with GPS coordinates, temperature, and elevation at
+        that moment.</li>
+        <li>Stopping overnight without ending the leg? Tap <b>⏸ Pause for
+        the Night</b> so family sees a friendly "taking a break" message
+        instead of a stale-data warning; it clears itself once you're
+        driving again.</li>
+        <li><b>👀 X watching now</b> only shows on your own screen, so you
+        know if anyone actually has the trip open.</li>
+        <li><b>Stop Sharing</b> ends it for good — the link/passcode stop
+        working.</li>
+      </ul>`,
+  },
+  'viewer-messages': {
+    title: 'Messages from Family',
+    html: `
+      <p>Anyone watching your shared trip can send you a short message from
+      their own screen — it shows up here, below the map, tagged with
+      whatever name they typed in.</p>
+      <p>It's also read aloud through voice guidance as soon as it arrives —
+      unless a turn-by-turn instruction is actively being spoken at that
+      moment, in which case it waits rather than talking over the turn; if
+      voice is still busy after a few seconds it gives up on speaking that
+      one, but it's always still sitting here in the panel to read.</p>
+      <p>This only appears while you're actively sharing a leg — nobody has
+      anyone to message otherwise.</p>`,
+  },
+  'watch-pin-overview': {
+    title: 'Watching a trip',
+    html: `
+      <p>If you were sent a link, you shouldn't need this screen at all — the
+      link opens you straight into watching. This screen is the fallback:
+      type in the 6-digit passcode the traveler gave you and tap
+      <b>Watch</b>.</p>
+      <p>Nothing to install, no account needed — you'll see their live
+      position, photos, comments, and weather update as they drive.</p>`,
+  },
+  'watch-live-overview': {
+    title: 'Watching live',
+    html: `
+      <ul>
+        <li>The status line at top tells you if things are current, if the
+        traveler is taking a break overnight (⏸ paused), or if updates have
+        gone stale.</li>
+        <li>Below that: current weather and elevation at their position,
+        then the live map — their position updates as an arrow pointing
+        their direction of travel.</li>
+        <li>Tap anywhere on the map for an estimated drive time from their
+        current spot to that point (an estimate, not a live calculation —
+        see the map's own <b>?</b> for why).</li>
+        <li><b>💬 Send a message</b> right below the map reaches the
+        traveler directly — it shows up on their dashboard and gets read
+        aloud to them.</li>
+        <li><b>⛰ Mountains Nearby</b> shows named peaks around their current
+        position.</li>
+        <li><b>📝 Trip Log</b> below the map lists every photo, video, and
+        comment they've added, newest first.</li>
+      </ul>`,
+  },
+  'map-watch': {
+    title: 'Using this map',
+    html: `
+      <ul>
+        <li>The map follows the traveler's live position automatically; drag
+        it to look around and a <b>⌖ Recenter</b> button appears to snap
+        back.</li>
+        <li><b>Tap anywhere</b> to estimate the drive time from their
+        current position to that spot. This is an estimate based on the
+        route data already shared with you (you don't have your own routing
+        key), so it's most accurate for a tap right on or very near their
+        route line — it'll say so if your tap landed well off of it.</li>
+      </ul>`,
+  },
+  'watch-mountains': {
+    title: 'Mountains Nearby',
+    html: `
+      <p>Named peaks with known elevation within about 40 miles of the
+      traveler's current position, with distance and compass direction from
+      them.</p>
+      <p>This is straight-line distance, not a guaranteed line-of-sight — a
+      closer ridge could still block the actual view of a listed peak.</p>`,
+  },
+  'watch-events': {
+    title: 'Trip Log',
+    html: `
+      <p>Every photo, video link, and comment the traveler has added along
+      the way, newest first, each tagged with the GPS coordinates,
+      temperature, and elevation at the moment it was added. Tap a photo to
+      view it larger, or a video link to open it.</p>`,
+  },
+  'watch-send-message': {
+    title: 'Send a message',
+    html: `
+      <p>Type your name once — this phone remembers it for next time — and
+      whatever you want to say, then tap <b>Send</b>. It shows up right on
+      the traveler's dashboard below their map, and gets read aloud to them
+      through voice guidance too (unless they're mid-turn, in which case it
+      waits so it doesn't talk over an actual turn instruction).</p>
+      <p>There's no reply feature yet — this is one-way, family to
+      traveler.</p>`,
+  },
+};
+
+function showHelp(topicId) {
+  const topic = HELP_TOPICS[topicId];
+  if (!topic) return;
+  document.getElementById('helpTitle').textContent = topic.title;
+  document.getElementById('helpBody').innerHTML = topic.html;
+  document.getElementById('helpModal').classList.remove('hidden');
+}
+
+// The topbar's ❓ button doesn't point at one fixed topic — it looks at
+// which top-level screen is currently visible and opens that screen's
+// overview instead, so the same button is "context-sensitive" without the
+// driver or a viewer having to know which per-section "?" to look for.
+function currentHelpTopicForScreen() {
+  if (!document.getElementById('setupScreen').classList.contains('hidden')) return 'setup-overview';
+  if (!document.getElementById('dashboard').classList.contains('hidden')) return 'dashboard-overview';
+  if (!document.getElementById('watchScreen').classList.contains('hidden')) {
+    return document.getElementById('watchPinEntry').classList.contains('hidden') ? 'watch-live-overview' : 'watch-pin-overview';
+  }
+  return 'setup-overview';
+}
+
+function wireHelpSystem() {
+  const modal = document.getElementById('helpModal');
+  document.getElementById('closeHelpBtn').addEventListener('click', () => modal.classList.add('hidden'));
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.classList.add('hidden'); }); // tap the dark backdrop to close
+  document.getElementById('helpBtn').addEventListener('click', () => showHelp(currentHelpTopicForScreen()));
+
+  // Delegated so every "?" button works — including ones inside dynamically
+  // rendered markup — without wiring a listener to each one individually.
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.help-btn');
+    if (!btn) return;
+    e.preventDefault();  // a "?" inside a <summary> would otherwise also toggle that <details>
+    e.stopPropagation();
+    showHelp(btn.dataset.help);
+  });
+}
+
+// Small on-map control explaining that map's tap/drag gestures — shared by
+// the driver's own map and a viewer's watch map, each pointed at its own
+// topic since a viewer's tap-for-ETA is an estimate rather than a live
+// calculation (see 'map-watch' above).
+function addMapHelpControl(map, topicId) {
+  const MapHelpControl = L.Control.extend({
+    options: { position: 'bottomleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'leaflet-bar map-toggle-btn');
+      div.innerText = '❓ Help';
+      div.title = 'What can I do with this map?';
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.on(div, 'click', () => showHelp(topicId));
+      return div;
+    },
+  });
+  return new MapHelpControl().addTo(map);
+}
+
+/* ============================== UPDATE CHECK ============================== */
+// This app has no service worker — a deliberate choice (see README) — which
+// means once a phone loads it, that in-memory copy just keeps running
+// exactly as it was, for as long as the tab/PWA stays open, with no idea a
+// newer version has been uploaded. Rather than relying on everyone
+// remembering to force-refresh (or Barry having to ask "what version do you
+// see?"), this polls a tiny version.json file every so often — fetched
+// fresh every time, `cache: 'no-store'`, never from the browser's HTTP
+// cache — and if its version doesn't match what's actually running, shows a
+// small dismissible banner offering a one-tap reload. Identical for the
+// driver and for every viewer on a shared link; version.json just needs to
+// be bumped to match APP_VERSION with every upload (see README section 4,
+// "Uploading an update — don't forget version.json").
+const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
+let dismissedUpdateVersion = null; // "Later" on the banner suppresses re-nagging for this same version
+
+async function checkForAppUpdate() {
+  try {
+    const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.version && data.version !== APP_VERSION && data.version !== dismissedUpdateVersion) {
+      showUpdateBanner(data.version);
+    }
+  } catch (e) {
+    // Offline, or a dropped connection mid-drive — nothing to report; the
+    // next scheduled check (or the next time the tab regains focus) will
+    // just try again.
+  }
+}
+
+function showUpdateBanner(newVersion) {
+  if (document.getElementById('updateBanner')) return; // already showing
+  const banner = document.createElement('div');
+  banner.id = 'updateBanner';
+  banner.className = 'update-banner';
+  banner.innerHTML = `
+    <span>🔄 A newer version is available (this one: ${escapeHtml(APP_VERSION)}).</span>
+    <button id="updateReloadBtn">Reload Now</button>
+    <button id="updateLaterBtn" class="update-later-btn">Later</button>
+  `;
+  document.body.appendChild(banner);
+  document.getElementById('updateReloadBtn').addEventListener('click', () => {
+    // Cache-bust the reload itself, and keep whatever query string got you
+    // here (?watch=PIN for a viewer on a shared link) so reloading doesn't
+    // accidentally drop them back at the passcode screen.
+    const url = new URL(window.location.href);
+    url.searchParams.set('_r', Date.now());
+    window.location.href = url.toString();
+  });
+  document.getElementById('updateLaterBtn').addEventListener('click', () => {
+    dismissedUpdateVersion = newVersion;
+    banner.remove();
+  });
+}
+
+function wireUpdateChecks() {
+  setTimeout(checkForAppUpdate, 15000); // give the initial page load a moment to settle first
+  setInterval(checkForAppUpdate, UPDATE_CHECK_INTERVAL_MS);
+  // Catches the common case directly: a phone that's been sitting
+  // backgrounded (overnight, or just in a pocket) gets checked again the
+  // moment it's actually looked at, rather than waiting out the interval.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkForAppUpdate();
+  });
 }
 
 /* ============================== INIT ============================== */
@@ -2838,6 +3536,8 @@ function renderAppVersion() {
 
 function init() {
   renderAppVersion();
+  wireUpdateChecks();
+  wireHelpSystem();
   wireSettingsModal();
   wireSetupScreen();
   wireEndLeg();
