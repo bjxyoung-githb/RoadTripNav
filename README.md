@@ -249,19 +249,35 @@ avoids that.
   talking over the turn, and quietly gives up on speaking that one after a
   few seconds if voice is still busy — either way, it's sitting in the
   panel to read whenever you glance down. This only shows up while you're
-  actively sharing, and it's one-way (family to you) — there's no reply
-  button. Whatever name someone types is just that — self-reported, not
-  verified — which is worth knowing but is normally a complete non-issue
-  for a small group of family you already shared the link with.
+  actively sharing. Whatever name someone types is just that —
+  self-reported, not verified — which is worth knowing but is normally a
+  complete non-issue for a small group of family you already shared the
+  link with.
+- **Voice Reply** — every message in the Messages from Family panel has a
+  **🎤 Reply** button. Tap it, speak your answer, and it's sent straight
+  back to that one person — not everyone watching, just whoever sent that
+  particular message — and shows up on their screen as a **🚗 Reply from
+  the Traveler**, with a short spoken "Reply sent to [name]" confirmation
+  on your end so you don't need to look at the screen to know it went
+  through. There's nothing to type in the normal case: tap, talk, done.
+  Voice input relies on your phone's browser having speech recognition
+  built in — solid on Chrome (Android or desktop), historically spottier
+  on Safari, which can also need an actual network connection to
+  transcribe. Where it's not available at all, tapping **🎤 Reply** falls
+  back to a quick one-line text prompt instead, so there's always some way
+  to answer.
 
 ## 4. Troubleshooting
 
 - **Checking you're on the latest version** — a small "Road Trip Navigator
-  vYYYY.MM.DD" line now appears at the bottom of the planning screen and in
-  Settings. After uploading updated files, check this against the version
-  mentioned in whatever update you just applied — if it still shows the old
-  date, that's a stale cached copy, not a failed upload (see the caching
-  entries below).
+  vYYYY.MM.DD" line appears at the bottom of the planning screen, in
+  Settings, and on the watch screen (both the passcode-entry screen and the
+  live view, so you can ask a family member to check theirs too without
+  walking them through Settings). After uploading updated files, check this
+  against the version mentioned in whatever update you just applied — if it
+  still shows the old date, that's a stale cached copy, not a failed upload
+  (see the caching entries below, and the automatic update-check banner
+  that should also catch this for anyone who already has the app open).
 - **Uploading an update — don't forget `version.json`** — every file update
   you upload should include an updated `version.json` (just one line:
   `{"version": "vYYYY.MM.DD.N"}`) that matches the new `APP_VERSION` in
@@ -387,6 +403,24 @@ avoids that.
   still busy reading an actual turn instruction when the message arrived
   and stayed busy long enough that it gave up trying — the message is still
   right there in the panel either way, nothing was lost.
+- **Tapping 🎤 Reply does nothing, or immediately shows an error about the
+  microphone** — your browser is either blocking mic access for this site
+  (check its site permissions and allow Microphone, same as the location
+  permission prompt) or doesn't support voice input at all, in which case
+  it should have fallen back to a text prompt instead — if it silently did
+  neither, try reloading first in case that's a stale-cache issue (see the
+  version-check entries above).
+- **"Couldn't send reply: Missing or insufficient permissions"** — your
+  Firestore rules need the `replies` block added; see section 7b.
+- **You replied, but it doesn't show up on their screen (they get a "Reply
+  sync error")** — same shape of issue as the messages one above: their
+  read of the `replies` collection is being denied. Re-check that the full
+  rules block from section 7b (all five `match` sections) got published,
+  not just part of it.
+- **Voice reply transcribed the wrong words, or nothing at all** — normal
+  speech-recognition limitations (accent, road noise, weak connection on
+  Safari, which can need network access to transcribe) — just tap 🎤 Reply
+  again and try once more.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
@@ -410,6 +444,11 @@ avoids that.
   location/photos/videos/comments as you, but treat the link or passcode
   itself like a house key: share it only with people you trust, and tap
   **Stop Sharing** when you don't want it usable anymore.
+- Voice reply depends on your browser's built-in speech recognition, which
+  is inconsistent across browsers — reliable on Chrome, historically
+  spottier on Safari (and can require an actual network connection to
+  transcribe, not guaranteed on the road). Where it's unavailable, replying
+  falls back to a one-line text prompt.
 
 ## 6. Running it on a PC instead of a phone (optional)
 
@@ -530,28 +569,42 @@ free, no billing/Blaze plan needed:
            allow delete: if request.auth != null
              && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
          }
+
+         match /replies/{replyId} {
+           allow read: if request.auth != null
+             && (get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid
+                 || request.auth.uid == resource.data.toUid);
+           allow create: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid
+             && request.resource.data.toUid is string
+             && request.resource.data.text is string
+             && request.resource.data.text.size() > 0
+             && request.resource.data.text.size() <= 300;
+           allow update: if false;
+           allow delete: if request.auth != null
+             && get(/databases/$(database)/documents/trips/$(pin)).data.ownerUid == request.auth.uid;
+         }
        }
      }
    }
    ```
 
-   **Already set this up before?** The `messages` block above is new — it's
-   what lets family send you messages (see section 3). Go back to
-   Firestore Database → **Rules**, replace what's there with the full block
-   above (all four `match` blocks — `trips`, `events`, `viewers`, and the
-   new `messages`), and **Publish** again. Nothing else needs to change;
-   your existing trip data, photos, and viewers are untouched. Until you do
-   this, viewers will get a permissions error trying to send a message —
-   everything else in the app keeps working normally either way.
-
-   **Already published the `messages` block once, but messages sent to it
-   never showed up on your screen?** The `create` rule above got one more
-   condition added since — it now also requires the trip to still be
-   `active`, so a message sent to a stopped/stale share link fails loudly
-   (the sender sees an error) instead of silently writing into a trip
-   nobody's listening to anymore, which looked exactly like "it sent, but
-   you never got it." Re-paste and re-publish the block above to pick that
-   up.
+   **Already set this up before?** Go back to Firestore Database →
+   **Rules**, replace what's there with the full block above (all five
+   `match` blocks — `trips`, `events`, `viewers`, `messages`, `replies`),
+   and **Publish** again whenever this block changes from a version you
+   already pasted in — nothing else needs to change, and your existing
+   trip data, photos, and viewers are untouched either way. Two things this
+   block currently does that an older paste of it might not yet:
+   - The `messages` and `replies` sections themselves are what let family
+     send you messages and let you voice-reply to one of them specifically
+     (see section 3) — without them, sending/replying fails with a
+     permissions error, though everything else in the app keeps working.
+   - The `messages` block's `create` rule requires the trip to still be
+     `active`, so a message sent to a stopped/stale share link fails
+     loudly (the sender sees an error) instead of silently writing into a
+     trip nobody's listening to anymore — which otherwise looks exactly
+     like "it sent, but you never got it."
 
 This rule means: only your own phone (recognized by a private key Firebase
 generates the first time you use this feature) can ever start a trip,
