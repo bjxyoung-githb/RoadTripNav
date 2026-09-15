@@ -330,6 +330,15 @@ avoids that.
   ask. That's a one-time thing — have them force-refresh once (see the
   caching entries below) to get onto a version that includes the checker,
   and every update after that announces itself automatically from then on.
+- **The update banner names the same version you're already on** — this was
+  a real bug (fixed in v2026.09.15.3): the banner used to always print your
+  *current* running version in its message instead of the actual newer one
+  it found in `version.json`, so it looked like it was contradicting itself
+  ("a newer version is available — it's this one") even though the check
+  underneath was working correctly. If you're on that version or later, the
+  banner now names the genuinely newer version it found and the version
+  you're currently running as two different numbers, so you can tell at a
+  glance whether it's worth reloading right away or fine to leave for later.
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
