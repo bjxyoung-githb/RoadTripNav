@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.14.14';
+const APP_VERSION = 'v2026.09.15.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -165,6 +165,10 @@ function loadSettings() {
     //  'avoid-highways' — always avoid highways/interstates, no matter the time cost
     routePreference: 'fastest',
     backRoadsToleranceMinutes: 15, // only used by 'balanced'
+    // When you drift off the calculated route — see maybeReroute():
+    //  'ask'  — show an on-screen (and once, spoken) offer and let you decide (default)
+    //  'auto' — recalculate right away, no prompt (the old, only behavior)
+    rerouteMode: 'ask',
   };
   try { return Object.assign(defaults, JSON.parse(localStorage.getItem(LS_SETTINGS) || '{}')); }
   catch (e) { return defaults; }
@@ -188,6 +192,12 @@ const state = {
   currentLegLabel: null, // whatever was typed in "Label this leg" when the route was calculated — see persistActiveLeg()
   currentStepIndex: 0,
   lastRerouteAt: 0,
+  // Off-route reroute prompt (see maybeReroute()/offerReroute()) — only used
+  // when Settings → "When off-route" is "Ask me first" (the default):
+  // 'none' | 'prompt' (big banner showing) | 'declined' (small chip only,
+  // after tapping "Keep Going This Way" — stays available without nagging).
+  rerouteOfferState: 'none',
+  rerouteOffer: null, // {lat,lon} to reroute from, kept fresh while off-route
   driving: { continuousSince: null, stoppedSince: null, lastRestSuggestedAt: null },
   cache: {
     weatherFetchedAtMiles: null, weatherFetchedAt: 0,
@@ -199,7 +209,7 @@ const state = {
   eventMarkers: [],
   etaTapMarker: null, // marker for the driver-side tap-anywhere-for-ETA popup — see handleMapTapForEta()
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
-  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null },
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
 };
 
@@ -1134,13 +1144,57 @@ function currentElevationFt() {
   return typeof elevM === 'number' ? Math.round(elevM * M_TO_FT) : null;
 }
 
+const REROUTE_TRIGGER_MILES = 0.5;
+// Hysteresis: has to come back closer than this to count as "back on route"
+// again — otherwise normal GPS wobble right around the trigger distance
+// would flicker the offer banner on and off repeatedly.
+const REROUTE_CLEAR_MILES = 0.3;
+
+// Decides what to do when the driver is off the calculated route — either
+// recalculate right away (old behavior, Settings → "Reroute automatically"),
+// or, by default, surface an on-screen (and spoken, once) offer and let the
+// driver decide — see offerReroute()/wireRerouteOffer(). Either way this
+// itself never blocks the caller; the 'ask' path always returns false
+// (nothing changed yet) and the actual reroute happens later from the
+// banner/chip tap, via performReroute().
 async function maybeReroute(offRouteMiles, curLat, curLon) {
-  const now = Date.now();
-  if (offRouteMiles < 0.5) return false;
-  if (now - state.lastRerouteAt < 2 * 60 * 1000) return false;
-  state.lastRerouteAt = now;
-  toast('You appear off-route — recalculating…', 5000);
-  speak('Recalculating route.');
+  if (offRouteMiles < REROUTE_CLEAR_MILES) {
+    if (state.rerouteOfferState !== 'none') {
+      state.rerouteOfferState = 'none';
+      state.rerouteOffer = null;
+      renderRerouteOffer();
+    }
+    return false;
+  }
+  if (offRouteMiles < REROUTE_TRIGGER_MILES) return false;
+
+  if ((state.settings.rerouteMode || 'ask') === 'auto') {
+    const now = Date.now();
+    if (now - state.lastRerouteAt < 2 * 60 * 1000) return false;
+    state.lastRerouteAt = now;
+    toast('You appear off-route — recalculating…', 5000);
+    speak('Recalculating route.');
+    return await performReroute(curLat, curLon);
+  }
+
+  // 'ask' mode: keep the reroute-from point fresh in case the driver taps
+  // the offer a while after first drifting off, then show whichever level
+  // of prompt is due — the full banner the first time this deviation is
+  // noticed, otherwise (already declined once) just leave the quiet chip
+  // up rather than re-asking.
+  state.rerouteOffer = { lat: curLat, lon: curLon };
+  if (state.rerouteOfferState === 'none') {
+    state.rerouteOfferState = 'prompt';
+    toast("Looks like you're taking a different way.", 5000);
+    speak('You appear to be off your route. Tap Reroute if you\'d like new directions.');
+  }
+  renderRerouteOffer();
+  return false;
+}
+
+// Does the actual recalculation — shared by both the automatic path and
+// the driver tapping "🔄 Reroute" on the offer banner/chip.
+async function performReroute(curLat, curLon) {
   try {
     const dest = state.route.destForReroute;
     const newRoute = await calcRouteWithPreference({ lat: curLat, lon: curLon }, dest);
@@ -1150,6 +1204,13 @@ async function maybeReroute(offRouteMiles, curLat, curLon) {
     state.arrivalAnnounced = false;
     drawRoute();
     persistActiveLeg(); // the route just changed — keep the overnight-resume snapshot current
+    if (state.share.active) {
+      // Send the new route to anyone watching too — see
+      // maybePushShareLocation() for why this can't just wait for the
+      // usual periodic location push to happen to include it.
+      state.share.routeDirty = true;
+      maybePushShareLocation();
+    }
     const choiceMsg = describeRouteChoice(newRoute);
     if (choiceMsg) toast(choiceMsg, 6000);
     return true;
@@ -1157,6 +1218,41 @@ async function maybeReroute(offRouteMiles, curLat, curLon) {
     toast('Reroute failed: ' + e.message, 6000);
     return false;
   }
+}
+
+function renderRerouteOffer() {
+  const banner = document.getElementById('rerouteOfferBanner');
+  const chip = document.getElementById('rerouteOfferChip');
+  if (banner) banner.classList.toggle('hidden', state.rerouteOfferState !== 'prompt');
+  if (chip) chip.classList.toggle('hidden', state.rerouteOfferState !== 'declined');
+}
+
+function wireRerouteOffer() {
+  const yesBtn = document.getElementById('rerouteOfferYesBtn');
+  const noBtn = document.getElementById('rerouteOfferNoBtn');
+  const chip = document.getElementById('rerouteOfferChip');
+  if (!yesBtn || !noBtn || !chip) return;
+
+  const acceptOffer = async () => {
+    const offer = state.rerouteOffer;
+    if (!offer) return;
+    state.rerouteOfferState = 'none';
+    state.rerouteOffer = null;
+    renderRerouteOffer();
+    state.lastRerouteAt = Date.now();
+    toast('Recalculating…', 4000);
+    await performReroute(offer.lat, offer.lon);
+  };
+
+  yesBtn.addEventListener('click', acceptOffer);
+  chip.addEventListener('click', acceptOffer);
+  noBtn.addEventListener('click', () => {
+    // Stays quiet (no more banner or voice prompt) for this same deviation,
+    // but the small chip sticks around so changing your mind later is still
+    // one tap away — see maybeReroute()'s REROUTE_CLEAR_MILES reset.
+    state.rerouteOfferState = 'declined';
+    renderRerouteOffer();
+  });
 }
 
 const VOICE_ANNOUNCE_MILES = 1.0;
@@ -1719,13 +1815,32 @@ function maybePushShareLocation() {
   if (!sh.active || !state.fb || !state.loc) return;
   const now = Date.now();
   const movedFar = !sh.lastPushLoc || haversineMiles(sh.lastPushLoc.lat, sh.lastPushLoc.lon, state.loc.lat, state.loc.lon) > 0.02;
-  if (now - sh.lastPushAt < 15000 && !movedFar) return;
+  // routeDirty (set by performReroute() after a successful reroute) forces
+  // a push right now regardless of the usual throttle, and rides along on
+  // this same write rather than needing its own separate one — see below.
+  if (now - sh.lastPushAt < 15000 && !movedFar && !sh.routeDirty) return;
   sh.lastPushAt = now;
   sh.lastPushLoc = { lat: state.loc.lat, lon: state.loc.lon };
-  state.fb.db.collection('trips').doc(sh.pin).set({
+  const payload = {
     lastLocation: { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: now },
     updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-  }, { merge: true }).catch(() => { /* best effort; next cycle retries */ });
+  };
+  // If the route was just recalculated (a reroute), send the fresh polyline
+  // along too — otherwise anyone watching would keep seeing the *old* route
+  // line on their map forever after this, and their tap-for-ETA estimates
+  // (which snap to this same shared data) would drift further off the
+  // longer they went without it. routeUpdatedAt lets the viewer cheaply
+  // tell "did the route actually change" apart from an ordinary location
+  // ping, without diffing 300 points — see renderWatchTrip().
+  const pushingRoute = sh.routeDirty && state.route;
+  if (pushingRoute) {
+    payload.routeCoords = sampleRouteForShare(state.route, 300);
+    payload.totalMiles = state.route.totalDist;
+    payload.routeUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
+  }
+  state.fb.db.collection('trips').doc(sh.pin).set(payload, { merge: true })
+    .then(() => { if (pushingRoute) sh.routeDirty = false; })
+    .catch(() => { /* best effort; next cycle retries — routeDirty (if set) stays set, so a route push keeps getting retried too */ });
 }
 
 // Lets the traveler alone see how many people are actively watching their
@@ -2766,6 +2881,7 @@ function stopWatching() {
   state.watch.peakMarkers = [];
   if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
   state.watch.routeLine = null;
+  state.watch.routeCoordsVersion = undefined; // undefined (not null) marks "never drawn yet" — see renderWatchTrip()
   state.watch.liveMarker = null;
   state.watch.etaTapMarker = null; // destroyed along with the map above
   state.watch.fullscreen = false;
@@ -3010,10 +3126,23 @@ function renderWatchTrip() {
     elevEl.textContent = ef != null ? `⛰ Traveler's current elevation: ${ef.toLocaleString()} ft` : '';
   }
 
-  if (map && trip.routeCoords && trip.routeCoords.length && !state.watch.routeLine) {
-    const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
-    state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
-    map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
+  // Redraws the route line not just the first time, but whenever the
+  // traveler reroutes too — see performReroute()/maybePushShareLocation()
+  // on their side, which is what actually sends the updated routeCoords.
+  // routeUpdatedAt changing (a cheap timestamp compare) is how this tells
+  // "the route actually changed" apart from an ordinary location-only
+  // update, without diffing 300 points on every single snapshot.
+  if (map && trip.routeCoords && trip.routeCoords.length) {
+    const routeVersion = (trip.routeUpdatedAt && typeof trip.routeUpdatedAt.toMillis === 'function') ? trip.routeUpdatedAt.toMillis() : null;
+    if (state.watch.routeCoordsVersion !== routeVersion) {
+      const isFirstDraw = state.watch.routeCoordsVersion === undefined;
+      if (state.watch.routeLine) { map.removeLayer(state.watch.routeLine); }
+      const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
+      state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
+      map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
+      state.watch.routeCoordsVersion = routeVersion;
+      if (!isFirstDraw) toast("The traveler's route changed — map updated.", 5000);
+    }
   }
 
   if (map && trip.lastLocation) {
@@ -3294,6 +3423,8 @@ function wireSetupScreen() {
       state.route = route;
       state.currentStepIndex = 0;
       state.lastRerouteAt = 0;
+      state.rerouteOfferState = 'none';
+      state.rerouteOffer = null;
       state.announced = new Set();
       state.arrivalAnnounced = false;
 
@@ -3353,6 +3484,8 @@ function wireSettingsModal() {
   const routePrefAvoidRadio = document.getElementById('routePrefAvoid');
   const backRoadsToleranceRow = document.getElementById('backRoadsToleranceRow');
   const backRoadsToleranceInput = document.getElementById('backRoadsToleranceInput');
+  const rerouteAskRadio = document.getElementById('rerouteModeAsk');
+  const rerouteAutoRadio = document.getElementById('rerouteModeAuto');
 
   function syncRelayRowVisibility() {
     relayUrlRow.classList.toggle('hidden', !locRelayRadio.checked);
@@ -3379,6 +3512,7 @@ function wireSettingsModal() {
     routePrefAvoidRadio.checked = pref === 'avoid-highways';
     backRoadsToleranceInput.value = state.settings.backRoadsToleranceMinutes != null ? state.settings.backRoadsToleranceMinutes : 15;
     syncToleranceRowVisibility();
+    (state.settings.rerouteMode === 'auto' ? rerouteAutoRadio : rerouteAskRadio).checked = true;
     modal.classList.remove('hidden');
   }
   openBtn.addEventListener('click', openModal);
@@ -3400,6 +3534,7 @@ function wireSettingsModal() {
     state.settings.relayUrl = newRelayUrl;
     state.settings.routePreference = checkedRoutePrefRadio();
     state.settings.backRoadsToleranceMinutes = backRoadsToleranceInput.value ? parseInt(backRoadsToleranceInput.value, 10) : 0;
+    state.settings.rerouteMode = rerouteAutoRadio.checked ? 'auto' : 'ask';
     saveSettings(state.settings);
     modal.classList.add('hidden');
     refreshCalcButton();
@@ -3494,6 +3629,8 @@ async function resumeActiveLeg(snap) {
   state.currentLegLabel = snap.legLabel || null;
   state.currentStepIndex = 0;
   state.lastRerouteAt = 0;
+  state.rerouteOfferState = 'none';
+  state.rerouteOffer = null;
   state.announced = new Set();
   state.arrivalAnnounced = false;
 
@@ -3671,6 +3808,23 @@ const HELP_TOPICS = {
         screen.</li>
       </ul>`,
   },
+  'reroute-offer': {
+    title: 'Reroute offer',
+    html: `
+      <p>Shows up when you've drifted noticeably off the calculated route —
+      by default it asks rather than just recalculating on its own, in case
+      you took a different way on purpose (a detour, a stop that's not on
+      the route, a shortcut you know about) and don't want it replanned out
+      from under you.</p>
+      <p>Tap <b>🔄 Reroute</b> to recalculate from wherever you are right
+      now. Tap <b>Keep Going This Way</b> to dismiss it — it won't ask again
+      for this same detour, but a small 🔄 button stays near the map the
+      whole time you're off-route in case you change your mind. Getting
+      back near the original route resets it, so the next detour asks
+      fresh.</p>
+      <p>Prefer it to just reroute automatically without asking? Settings →
+      "When you go off the planned route" has that as an option too.</p>`,
+  },
   'fuel-planner': {
     title: 'Fuel Planner',
     html: `
@@ -3828,6 +3982,10 @@ const HELP_TOPICS = {
         their shared route (same accuracy caveat as the ETA); weather is a
         live, exact lookup for that spot and loads in a moment after the
         rest of the popup appears.</li>
+        <li>If the traveler reroutes mid-drive, the blue route line here
+        updates to match within moments, with a quick note that it changed
+        — you're never left watching their position drift away from a route
+        they're no longer on.</li>
       </ul>`,
   },
   'watch-mountains': {
@@ -4015,6 +4173,7 @@ function init() {
   wireWatchScreen();
   wireEventActions();
   wireViewerMessageReplies();
+  wireRerouteOffer();
   checkForActiveLeg();
 
   const linkedPin = getAutoWatchPinFromUrl();
