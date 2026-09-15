@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.15.2';
+const APP_VERSION = 'v2026.09.15.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -4123,7 +4123,7 @@ function showUpdateBanner(newVersion) {
   banner.id = 'updateBanner';
   banner.className = 'update-banner';
   banner.innerHTML = `
-    <span>🔄 A newer version is available (this one: ${escapeHtml(APP_VERSION)}).</span>
+    <span>🔄 A newer version is available (${escapeHtml(newVersion)}) — you're on ${escapeHtml(APP_VERSION)}.</span>
     <button id="updateReloadBtn">Reload Now</button>
     <button id="updateLaterBtn" class="update-later-btn">Later</button>
   `;
