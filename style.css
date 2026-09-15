@@ -175,6 +175,23 @@ input:disabled { opacity: .6; }
   white-space: nowrap; max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Off-route reroute offer (driver side) — see maybeReroute()/offerReroute().
+   Fixed so it floats over the map in both normal and full-map view. */
+.reroute-offer-banner {
+  position: fixed; left: 12px; right: 12px; bottom: 110px; z-index: 4200;
+  background: rgba(23,35,61,.97); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 14px; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.reroute-offer-text { font-size: 14px; margin-bottom: 10px; line-height: 1.4; color: var(--text); }
+.reroute-offer-actions { display: flex; gap: 8px; }
+.reroute-offer-actions button { flex: 1; }
+.reroute-offer-chip {
+  position: fixed; left: 12px; bottom: 110px; z-index: 4200;
+  background: var(--accent); color: white; border: none; border-radius: 20px;
+  padding: 10px 16px; font-size: 14px; font-weight: 700; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.reroute-offer-chip:active { background: #2563eb; }
+
 .turn-banner {
   background: var(--accent); color: white; padding: 14px 16px;
 }
