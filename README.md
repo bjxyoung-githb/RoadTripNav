@@ -109,15 +109,25 @@ avoids that.
 - **Route & turn-by-turn** — calculated by OpenRouteService; the map shows
   your route, your live position, and the full step list with the current
   step highlighted. Spoken prompts announce each turn about a mile ahead
-  and again right before it. If you drift off the calculated route, it
-  automatically recalculates (and says so out loud). The route can only end
-  on a road the map data marks as drivable — if your exact pin sits on a
-  private complex/HOA road or similar that isn't mapped that way, the route
-  will stop at the nearest public road instead. When that gap is more than
-  about 500 feet, a 🏠 pin marks your actual destination separately from
-  the blue route-end marker, with a warning banner, so you know you'll need
-  to finish the last stretch on foot or by eye rather than being silently
-  routed somewhere else.
+  and again right before it. The route can only end on a road the map data
+  marks as drivable — if your exact pin sits on a private complex/HOA road
+  or similar that isn't mapped that way, the route will stop at the nearest
+  public road instead. When that gap is more than about 500 feet, a 🏠 pin
+  marks your actual destination separately from the blue route-end marker,
+  with a warning banner, so you know you'll need to finish the last stretch
+  on foot or by eye rather than being silently routed somewhere else.
+- **Off-route reroute offer** — if you drift noticeably off the calculated
+  route, by default the app asks rather than assuming: a banner pops up
+  ("Looks like you're taking a different way. Recalculate the route from
+  here?") with **🔄 Reroute** and **Keep Going This Way** buttons, and it
+  says the offer out loud once too. Tap **Keep Going This Way** and it stays
+  quiet for that detour — no repeated nagging every couple minutes — but a
+  small 🔄 button stays near the map the whole time you're off-route in
+  case you change your mind partway through. Getting back near the original
+  route resets it, so a later detour gets asked about fresh. If you'd
+  rather it just recalculate automatically with no prompt (the only
+  behavior before this existed), Settings → "When you go off the planned
+  route" has that as the other option.
 - **Route preference (back roads vs. interstate)** — in Settings, choose
   **Fastest route** (the old default — highways/interstates used as
   needed), **Prefer back roads if it's not much slower** (calculates both
@@ -232,7 +242,11 @@ avoids that.
   your position (rotated to your direction of travel, with your current
   speed/heading, elevation, and the weather right where you are), plus any
   photos/videos/comments you add — all without installing anything or
-  creating an account. A collapsible **⛰ Mountains Nearby** section on
+  creating an account. If you reroute mid-drive (whether you tapped **🔄
+  Reroute** on the offer banner or it recalculated automatically), the blue
+  route line on their map updates to match within moments too, with a
+  quick note that it changed — they're never left watching your live
+  position drift away from a route you're no longer actually following. A collapsible **⛰ Mountains Nearby** section on
   their screen shows named peaks around your current position too, the
   same way it does on your own dashboard. Use the 📷, 🎥, and 💬 buttons in this panel to drop
   a geotagged photo, video link, or comment; they show up as pins on both
@@ -405,6 +419,14 @@ avoids that.
   was too much slower, raise the extra-minutes tolerance in Settings. With
   either back-roads option, a short unavoidable stretch of highway can still
   appear if that's genuinely the only road available there.
+- **The reroute offer isn't showing up when I go off-route** — it only
+  triggers once you're about half a mile from the calculated route (normal
+  GPS wobble near an interchange or wide intersection isn't enough), and it
+  won't ask again for the same detour once you've already tapped "Keep
+  Going This Way" for it — look for the small 🔄 chip near the map instead.
+  Also check Settings → "When you go off the planned route" is set to "Ask
+  me first" rather than "Reroute automatically" (which recalculates with no
+  prompt at all, by design).
 - **A viewer's tap-for-ETA looks off, or says the tap is far from the
   route** — expected once the tap lands well away from your route line;
   viewers estimate off the route data already shared with them rather than
