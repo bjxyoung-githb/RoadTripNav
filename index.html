@@ -72,6 +72,18 @@
       available to legally pass when the way ahead is clear.
     </div>
 
+    <label>When you go off the planned route</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="rerouteMode" id="rerouteModeAsk" value="ask"> Ask me first (shows a Reroute button, and says it out loud once)</label>
+      <label class="radio-option"><input type="radio" name="rerouteMode" id="rerouteModeAuto" value="auto"> Reroute automatically, no prompt</label>
+    </div>
+    <div class="hint">
+      "Ask me first" only offers once per detour — decline it and a small
+      🔄 button stays available near the map if you change your mind, and it
+      resets once you're back on the planned route so the next detour asks
+      again.
+    </div>
+
     <label>Location source</label>
     <div class="radio-row">
       <label class="radio-option"><input type="radio" name="locSource" id="locSourceDevice" value="device"> This device's own GPS (default, use on a phone)</label>
@@ -206,6 +218,18 @@
 <!-- MAIN DASHBOARD -->
 <div id="dashboard" class="dashboard hidden">
   <div id="map"></div>
+
+  <!-- Off-route reroute offer — see maybeReroute()/offerReroute() in app.js.
+       Fixed-position so it stays visible over the map in both normal and
+       full-map view; hidden unless actually off-route. -->
+  <div id="rerouteOfferBanner" class="reroute-offer-banner hidden">
+    <div class="reroute-offer-text">Looks like you're taking a different way. Recalculate the route from here? <button class="help-btn" data-help="reroute-offer" title="Help" aria-label="Help">?</button></div>
+    <div class="reroute-offer-actions">
+      <button id="rerouteOfferYesBtn" class="primary-btn small">🔄 Reroute</button>
+      <button id="rerouteOfferNoBtn" class="ghost-btn small">Keep Going This Way</button>
+    </div>
+  </div>
+  <button id="rerouteOfferChip" class="reroute-offer-chip hidden" title="Reroute from here" aria-label="Reroute from here">🔄 Reroute</button>
 
   <div id="viewerMessagesPanel" class="viewer-messages-panel hidden">
     <div class="section-title-row" style="margin:0 0 6px;">
