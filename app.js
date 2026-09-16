@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.16.2';
+const APP_VERSION = 'v2026.09.16.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -4164,6 +4164,36 @@ function showUpdateBanner(newVersion) {
     <button id="updateLaterBtn" class="update-later-btn">Later</button>
   `;
   document.body.appendChild(banner);
+
+  // The banner floats over the page (position: fixed) rather than sitting
+  // in normal document flow, so nothing else automatically makes room for
+  // it — whatever happened to be at the very bottom of the page (like the
+  // version footer on the setup screen) sits right underneath it and gets
+  // covered. This got reported specifically as "only in portrait": in a
+  // narrower width the banner's text/buttons wrap onto more lines and the
+  // banner gets taller, while landscape's extra width fits it on one line
+  // and it's short enough to miss whatever's behind it — so a fixed pixel
+  // guess wouldn't survive a rotation. Instead this measures the banner's
+  // actual rendered height and pads the page by exactly that much,
+  // re-measuring live via ResizeObserver so a rotation (or the dynamic
+  // island/notch inset changing) keeps it accurate automatically.
+  const syncBodyPadding = () => { document.body.style.paddingBottom = banner.offsetHeight + 'px'; };
+  syncBodyPadding();
+  let bannerResizeObserver = null;
+  if ('ResizeObserver' in window) {
+    bannerResizeObserver = new ResizeObserver(syncBodyPadding);
+    bannerResizeObserver.observe(banner);
+  } else {
+    // Older browser without ResizeObserver — orientation/resize events
+    // still cover the case that actually got reported.
+    window.addEventListener('resize', syncBodyPadding);
+  }
+  const cleanupBodyPadding = () => {
+    document.body.style.paddingBottom = '';
+    if (bannerResizeObserver) bannerResizeObserver.disconnect();
+    else window.removeEventListener('resize', syncBodyPadding);
+  };
+
   document.getElementById('updateReloadBtn').addEventListener('click', () => {
     // Cache-bust the reload itself, and keep whatever query string got you
     // here (?watch=PIN for a viewer on a shared link) so reloading doesn't
@@ -4174,6 +4204,7 @@ function showUpdateBanner(newVersion) {
   });
   document.getElementById('updateLaterBtn').addEventListener('click', () => {
     dismissedUpdateVersion = newVersion;
+    cleanupBodyPadding();
     banner.remove();
   });
 }
