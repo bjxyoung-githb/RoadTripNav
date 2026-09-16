@@ -246,7 +246,10 @@ avoids that.
   Reroute** on the offer banner or it recalculated automatically), the blue
   route line on their map updates to match within moments too, with a
   quick note that it changed — they're never left watching your live
-  position drift away from a route you're no longer actually following. A collapsible **⛰ Mountains Nearby** section on
+  position drift away from a route you're no longer actually following.
+  Their status line also shows an estimated **Hours to go**, worked out
+  from your shared route data the same way as the tap-for-ETA feature
+  below. A collapsible **⛰ Mountains Nearby** section on
   their screen shows named peaks around your current position too, the
   same way it does on your own dashboard. Use the 📷, 🎥, and 💬 buttons in this panel to drop
   a geotagged photo, video link, or comment; they show up as pins on both
