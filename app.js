@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.15.3';
+const APP_VERSION = 'v2026.09.16.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -4102,12 +4102,41 @@ function addMapHelpControl(map, topicId) {
 const UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 let dismissedUpdateVersion = null; // "Later" on the banner suppresses re-nagging for this same version
 
+// Parses "vYYYY.MM.DD.N" into 4 comparable numbers. Returns null for
+// anything that doesn't match that shape, so a malformed/future version
+// scheme just falls back to a plain string check (see isNewerVersion())
+// rather than crashing.
+function parseVersionParts(v) {
+  const m = String(v || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), parseInt(m[4], 10)];
+}
+
+// True only when `a` is STRICTLY newer than `b` — deliberately not just
+// "different". A naive !== check here is what caused the update banner to
+// loop, claiming "a newer version is available" while naming the exact
+// same version already running: version.json can briefly serve something
+// stale right after a fresh upload (a CDN edge cache lagging behind, an
+// old copy of the file re-uploaded by mistake, even just leading/trailing
+// whitespace inside the string), and a plain inequality treats "stale and
+// older" the same as "genuinely newer." Comparing the four numbers in
+// order means equal or older never shows anything.
+function isNewerVersion(a, b) {
+  const pa = parseVersionParts(a);
+  const pb = parseVersionParts(b);
+  if (!pa || !pb) return String(a).trim() !== '' && String(a).trim() !== String(b).trim();
+  for (let i = 0; i < 4; i++) {
+    if (pa[i] !== pb[i]) return pa[i] > pb[i];
+  }
+  return false;
+}
+
 async function checkForAppUpdate() {
   try {
     const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
-    if (data.version && data.version !== APP_VERSION && data.version !== dismissedUpdateVersion) {
+    if (data.version && isNewerVersion(data.version, APP_VERSION) && data.version !== dismissedUpdateVersion) {
       showUpdateBanner(data.version);
     }
   } catch (e) {
