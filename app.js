@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.16.3';
+const APP_VERSION = 'v2026.09.16.4';
 
 /* ============================== UTILITIES ============================== */
 
@@ -3179,8 +3179,23 @@ function renderWatchTrip() {
   }
   else if (!trip.lastLocation) status = "Waiting for the traveler's first location update…";
   else {
-    status = `Heading to ${trip.destLabel || 'destination'} · updated ${ageSec < 60 ? Math.round(ageSec) + 's' : Math.round(ageSec / 60) + 'm'} ago` +
-      (ageSec > 120 ? ' — last known position may be stale' : '');
+    status = `Heading to ${trip.destLabel || 'destination'} · updated ${ageSec < 60 ? Math.round(ageSec) + 's' : Math.round(ageSec / 60) + 'm'} ago`;
+    // Same estimate as the tap-for-ETA popup (see handleWatchMapTapForEta
+    // / nearestSharedRoutePoint): snap the traveler's current position to
+    // the shared route's sample points, then the gap between that sample's
+    // cumDur and the last sample's cumDur (the route's total duration) is
+    // the remaining drive time. Rounded to whole hours per what's asked
+    // for here; anything under 30 min still shows as "0" rather than
+    // disappearing, so it's clear an estimate is still being offered.
+    if (trip.routeCoords && trip.routeCoords.length) {
+      const current = nearestSharedRoutePoint(trip.routeCoords, trip.lastLocation.lat, trip.lastLocation.lon);
+      if (current) {
+        const totalDur = trip.routeCoords[trip.routeCoords.length - 1].cumDur;
+        const remainingSec = Math.max(0, totalDur - current.point.cumDur);
+        status += ` · Hours to go: ${Math.round(remainingSec / 3600)}`;
+      }
+    }
+    status += (ageSec > 120 ? ' — last known position may be stale' : '');
   }
   renderWatchStatus(status);
 }
@@ -3986,6 +4001,10 @@ const HELP_TOPICS = {
         updates to match within moments, with a quick note that it changed
         — you're never left watching their position drift away from a route
         they're no longer on.</li>
+        <li>The "Hours to go" figure next to the update time is an estimate
+        of remaining drive time, using the same shared route data as the
+        tap-for-ETA feature above — most accurate while they're on or near
+        their planned route.</li>
       </ul>`,
   },
   'watch-mountains': {
