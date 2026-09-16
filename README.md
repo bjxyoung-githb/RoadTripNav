@@ -330,15 +330,23 @@ avoids that.
   ask. That's a one-time thing — have them force-refresh once (see the
   caching entries below) to get onto a version that includes the checker,
   and every update after that announces itself automatically from then on.
-- **The update banner names the same version you're already on** — this was
-  a real bug (fixed in v2026.09.15.3): the banner used to always print your
-  *current* running version in its message instead of the actual newer one
-  it found in `version.json`, so it looked like it was contradicting itself
-  ("a newer version is available — it's this one") even though the check
-  underneath was working correctly. If you're on that version or later, the
-  banner now names the genuinely newer version it found and the version
-  you're currently running as two different numbers, so you can tell at a
-  glance whether it's worth reloading right away or fine to leave for later.
+- **The update banner keeps showing up naming the same version you're
+  already on, even after reloading** — two separate bugs, both now fixed:
+  v2026.09.15.3 fixed the banner's *message* always printing your current
+  running version instead of the actually-newer one it found; v2026.09.16.1
+  fixed the actual *check* underneath, which used to treat "different at
+  all" as "newer" — so a `version.json` that was momentarily stale (a CDN
+  edge cache lagging a few minutes behind a fresh upload) or briefly showed
+  an older number than what's running could trigger the same confusing
+  loop, with Reload Now never making it go away since there was nothing
+  actually newer to load. It now only fires for a version.json number that
+  is genuinely, numerically greater than what's running (comparing the
+  four `vYYYY.MM.DD.N` numbers in order), never merely different. If this
+  still happens after updating to v2026.09.16.1 or later, open
+  `version.json` directly in your browser (add `/version.json` to your
+  site's URL) and compare what it says against the number in the app's own
+  footer — if they're genuinely different, the upload of one of those two
+  files didn't fully take; re-upload both together.
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
