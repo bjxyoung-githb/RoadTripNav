@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.16.1';
+const APP_VERSION = 'v2026.09.16.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -4107,7 +4107,14 @@ let dismissedUpdateVersion = null; // "Later" on the banner suppresses re-naggin
 // scheme just falls back to a plain string check (see isNewerVersion())
 // rather than crashing.
 function parseVersionParts(v) {
-  const m = String(v || '').trim().match(/^v?(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  // Accepts "." OR "-" between the number groups (v2026.09.16.1 as well as
+  // a stray v2026.09.16-1) — a one-character typo like that is easy to
+  // introduce hand-editing version.json and easy to miss reading it back
+  // (a hyphen and a period look nearly identical in a compact UI font), and
+  // it otherwise defeats the numeric comparison below entirely, falling
+  // back to a plain "is this literally the same text" check that treats
+  // the typo'd version as a mysterious newer one forever.
+  const m = String(v || '').trim().match(/^v?(\d+)[.-](\d+)[.-](\d+)[.-](\d+)$/);
   if (!m) return null;
   return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), parseInt(m[4], 10)];
 }
