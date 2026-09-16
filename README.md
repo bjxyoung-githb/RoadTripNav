@@ -346,7 +346,19 @@ avoids that.
   `version.json` directly in your browser (add `/version.json` to your
   site's URL) and compare what it says against the number in the app's own
   footer — if they're genuinely different, the upload of one of those two
-  files didn't fully take; re-upload both together.
+  files didn't fully take; re-upload both together. A one-character typo in
+  `version.json` (a hyphen instead of a period between the numbers, easy to
+  introduce hand-editing it and easy to miss reading it back — they look
+  nearly identical) used to cause exactly this too; v2026.09.16.2 made the
+  check tolerant of either.
+- **The update banner covers up the version footer at the bottom of the
+  screen** — fixed in v2026.09.16.3. The banner floats over the page rather
+  than pushing content up, so nothing previously made room for it; this
+  only showed up in portrait (the banner's text wraps onto more lines at a
+  narrower width, making it taller) and not landscape, which is why it was
+  easy to mistake for something only some devices hit. It now measures its
+  own height and pads the bottom of the page by exactly that much,
+  re-checking automatically on rotation.
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
