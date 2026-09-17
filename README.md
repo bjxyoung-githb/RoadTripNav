@@ -228,6 +228,11 @@ avoids that.
   current location.
 - **Drive Timer** — tracks continuous driving time (based on GPS speed) and
   pops up a reminder at the interval you set in Settings.
+- **Keeps your screen awake while navigating** — same trick Google Maps and
+  other nav apps use, so a phone mounted in the car (especially one set to
+  auto-lock on detected motion) doesn't dim or lock mid-drive. Turns on
+  automatically the moment you calculate or resume a route and turns back
+  off when you end the leg, so it's not draining battery at other times.
 - **Share & Trip Log** (optional, needs one-time setup — see section 7) —
   tap **Start Sharing This Leg** to get a one-tap link (and a 6-digit
   passcode as a backup) to give to family. Tap **📤 Share Link** to send it
@@ -273,8 +278,18 @@ avoids that.
   a generic stale/no-update note, and it clears itself the next time you've
   driven a bit (or tap **▶ Resume Sharing** yourself); the link keeps
   working the whole time, nothing to resend. Tap **Stop Sharing** (or
-  **New / End Leg**) when you're actually done for good; the passcode
-  stops working.
+  **New / End Leg**) when you're actually done for good — that turns off
+  live position updates, but the same link/passcode keeps showing that
+  leg's route, photos, and comments afterward (anyone can still open it,
+  they just won't see your position move); see **My past trip logs**
+  below for how you pull it back up yourself.
+- **My past trip logs** (setup screen, once you've shared at least one leg)
+  — every leg you've ever started sharing shows up in a list here, most
+  recent first, each with a **👀 View** button that drops you straight into
+  the exact same screen family sees from your link: the route, every photo
+  and comment, and the same **⬇ Save** / **📤 Share** buttons on each photo.
+  Handy for pulling a picture back up after you've already ended the leg,
+  without having to dig up the passcode or ask whoever you sent it to.
 - **Messages from Family** — anyone watching your shared trip has a **💬
   Send a message** box right below their map on the watch screen. They type
   their name once (their phone remembers it after that) and a short
@@ -362,6 +377,42 @@ avoids that.
   easy to mistake for something only some devices hit. It now measures its
   own height and pads the bottom of the page by exactly that much,
   re-checking automatically on rotation.
+- **Turn-by-turn showed the wrong street/direction, even though the
+  distance countdown was correct** — fixed in v2026.09.17.1. The distance
+  was always measured to the right spot (the end of the road you're
+  currently on), but the instruction text and voice announcement were
+  pulled from the road you're already on rather than the one you're about
+  to turn onto, so it read one turn stale — e.g. "Turn right in 280 ft"
+  when the upcoming turn was actually a left, because that was the
+  direction of the turn you'd already made. Now the instruction and the
+  distance both point at the same upcoming turn.
+- **Voice guidance stopped working, even though it's worked before and
+  "Enable Voice Guidance" is checked** — as of v2026.09.17.2, tapping
+  Enable Voice Guidance (or turning the 🔊 toggle back on) now speaks an
+  actual audible test phrase immediately, so you find out on the spot if
+  it's silent rather than an hour into a drive, and any failure now shows a
+  toast instead of failing silently. The most common actual cause turned
+  out to be the phone's screen locking mid-drive (see the next bullet,
+  fixed as of v2026.09.17.3) — a locked/backgrounded tab is also what let
+  Android Chrome's speech engine quietly wedge itself shut with no error
+  and no sound, ever again until a full page reload; this build now also
+  periodically nudges the speech engine in the background to keep that from
+  happening on its own. If you still get no sound after all that: check
+  your phone's media volume (not ringer volume — voice guidance plays
+  through the same channel as music/podcasts, and if Bluetooth was
+  connected to the car, that volume is separately controlled by the car);
+  on iPhone, the physical mute switch silences it same as any app.
+- **Phone screen dims or locks while navigating** — fixed as of
+  v2026.09.17.3: the app now keeps the screen awake automatically the whole
+  time you have an active route, the same way Google Maps does, so a phone
+  mounted in the car (including one set to auto-lock on detected motion)
+  should no longer time out mid-drive. It turns itself off again once you
+  end the leg. If you'd tweaked your phone's own display-timeout or
+  motion-lock settings to work around this before, you can safely put those
+  back — though there's no harm leaving them as a backup. This only holds
+  the screen awake while this browser tab is the one actively in front of
+  you; switching to another app, or manually pressing the power button,
+  still locks the phone same as always.
 - **"GPS error: allow location access"** — your phone browser blocked or
   you denied the location prompt. Check the site's permissions in your
   browser settings and allow Location, then reload the page.
@@ -459,6 +510,32 @@ avoids that.
   Also check Settings → "When you go off the planned route" is set to "Ask
   me first" rather than "Reroute automatically" (which recalculates with no
   prompt at all, by design).
+- **The reroute offer popped up while I was clearly still on the route**
+  (fixed in v2026.09.17.4) — this came from how off-route distance was
+  being measured: it checked distance to the nearest recorded point on the
+  route line, but on a long, dead-straight rural highway those points can
+  be a mile or more apart (the route only gets a point where the real road
+  actually bends), so sitting in the middle of one of those stretches could
+  measure as "half a mile off route" even while driving right down the
+  center of it. It now measures distance to the nearest point anywhere
+  along the route line, not just the nearest recorded point, which is what
+  the false triggers on long straight stretches were about. One related fix
+  alongside it: accepting a reroute (or having one happen automatically)
+  used to re-zoom your own map, and every watcher's map, down to just the
+  new remaining route — which is almost certainly what looked like your
+  earlier photos and comments had been "cut off": they're still there (a
+  reroute never touches the trip log), just outside the newly-zoomed view.
+  A reroute no longer re-zooms anyone's map at all, only the very first
+  route calculation does.
+- **Can a viewer save or share the photos themselves, or only the driver?**
+  — they already can, with the exact same buttons: every photo in the trip
+  log (both in the scrolling list and in its map pin popup) has its own
+  **⬇ Save** and **📤 Share** buttons, whether you're looking at it as the
+  driver or someone's looking at it through your share link — it's
+  literally the same code rendering it either way. No screenshot/screen
+  clip workaround needed. If a photo doesn't have those buttons, tapping it
+  first opens a bigger view (a lightbox) that has its own Save/Share row at
+  the bottom.
 - **A viewer's tap-for-ETA looks off, or says the tap is far from the
   route** — expected once the tap lands well away from your route line;
   viewers estimate off the route data already shared with them rather than
