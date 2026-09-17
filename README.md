@@ -283,15 +283,21 @@ avoids that.
   leg's route, photos, and comments afterward (anyone can still open it,
   they just won't see your position move); see **My past trip logs**
   below for how you pull it back up yourself.
-- **My past trip logs** (setup screen, once you've shared at least one leg)
-  — every leg you've ever started sharing shows up in a list here, most
-  recent first, each with a **👀 View** button that drops you straight into
-  the exact same screen family sees from your link: the route, every photo
-  and comment, and the same **⬇ Save** / **📤 Share** buttons on each photo.
-  Handy for pulling a picture back up after you've already ended the leg,
-  without having to dig up the passcode or ask whoever you sent it to.
-  Collapsed by default (tap "Show past legs" to expand) since this can grow
-  long over a multi-week trip.
+- **My past trip logs** (setup screen) — every leg you've ever started
+  sharing shows up in a list here, most recent first, each with a **👀
+  View** button that drops you straight into the exact same screen family
+  sees from your link: the route, every photo and comment, and the same
+  **⬇ Save** / **📤 Share** buttons on each photo. Handy for pulling a
+  picture back up after you've already ended the leg, without having to
+  dig up the passcode or ask whoever you sent it to. Collapsed by default
+  (tap "Show past legs" to expand) since this can grow long over a
+  multi-week trip. This list only lives in this one browser, not in the
+  cloud, so it starts empty again if you clear this site's browser data,
+  switch phones, or open the app somewhere else — the trips themselves are
+  completely unaffected either way, still sitting in Firestore exactly as
+  they were. There's an "Add" box at the bottom of the list for exactly
+  that situation: paste in an old passcode or share link (checking texts
+  you sent family is the easiest way to find one) and it gets listed again.
 - **Messages from Family** — anyone watching your shared trip has a **💬
   Send a message** box right below their map on the watch screen. They type
   their name once (their phone remembers it after that) and a short
@@ -391,7 +397,21 @@ avoids that.
   cache-busted `index.html` fetch was already working correctly — it just
   didn't matter before, because everything past the page shell was stale.
   If it somehow still doesn't budge, clear the site's data in your phone
-  browser's settings (or reinstall the home-screen icon) as a last resort.
+  browser's settings (or reinstall the home-screen icon) as a last resort
+  — just know that also empties "My past trip logs" (see below), though
+  none of the actual trips it pointed to are affected.
+- **"My past trip logs" is completely empty/missing after clearing this
+  site's data (or on a different phone/browser)** — expected, not a bug:
+  that list is a local shortcut that only lives in the one browser it was
+  built in, never in the cloud. Clearing site data, switching phones, or
+  opening the app in a different browser all start it empty, but every
+  trip it used to point to is completely unaffected — still sitting in
+  Firestore exactly as it was, reachable the normal way through its
+  passcode or share link. As of v2026.09.17.8, the panel stays visible
+  even when the list is empty specifically so you have somewhere to paste
+  an old passcode or link back in (the "Add" box at the bottom) rather
+  than being stuck with no way back in short of digging through old texts
+  for the exact right link to tap.
 - **The update banner covers up the version footer at the bottom of the
   screen** — fixed in v2026.09.16.3. The banner floats over the page rather
   than pushing content up, so nothing previously made room for it; this
