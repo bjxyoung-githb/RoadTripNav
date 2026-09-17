@@ -290,6 +290,8 @@ avoids that.
   and comment, and the same **⬇ Save** / **📤 Share** buttons on each photo.
   Handy for pulling a picture back up after you've already ended the leg,
   without having to dig up the passcode or ask whoever you sent it to.
+  Collapsed by default (tap "Show past legs" to expand) since this can grow
+  long over a multi-week trip.
 - **Messages from Family** — anyone watching your shared trip has a **💬
   Send a message** box right below their map on the watch screen. They type
   their name once (their phone remembers it after that) and a short
@@ -536,6 +538,16 @@ avoids that.
   clip workaround needed. If a photo doesn't have those buttons, tapping it
   first opens a bigger view (a lightbox) that has its own Save/Share row at
   the bottom.
+- **"My past trip logs" has way more entries than legs I actually
+  shared** (fixed in v2026.09.17.6) — resuming a leg (via the "Resume
+  Trip" banner after any reload, which includes every app-update reload)
+  was mistakenly re-recording that same trip as a brand-new entry each
+  time, rather than recognizing it as one already on the list. A day with
+  several reloads — a handful of app updates, say — could rack up several
+  duplicate entries for what was really just one or two actual "Start
+  Sharing" taps. It now recognizes a trip it's already seen and leaves the
+  list alone; it also quietly cleans up any duplicates already sitting in
+  the list from before this fix, the next time the list loads.
 - **A viewer's tap-for-ETA looks off, or says the tap is far from the
   route** — expected once the tap lands well away from your route line;
   viewers estimate off the route data already shared with them rather than
