@@ -5,7 +5,16 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.17.6';
+// IMPORTANT: on every release, this must be bumped together with
+// version.json's "version" AND the ?v= query strings on index.html's
+// <script src="app.js?v=..."> and <link href="style.css?v=...">. Those
+// query strings are what actually force a fresh fetch instead of the
+// browser (or GitHub Pages' CDN) serving a stale cached copy under the
+// unchanged, un-busted URL — the update-check banner reloading the page
+// alone does NOT guarantee that; see the comment above the stylesheet
+// link in index.html for the full story (this was a real bug, not just a
+// caution: it's why "accept update" could keep doing nothing).
+const APP_VERSION = 'v2026.09.17.7';
 
 /* ============================== UTILITIES ============================== */
 
