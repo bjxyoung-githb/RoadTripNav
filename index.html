@@ -13,7 +13,19 @@
 <link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<link rel="stylesheet" href="style.css">
+<!-- The ?v= below is the actual fix for "I accept the update but it doesn't
+     change anything": the version-check banner (see app.js's
+     checkForAppUpdate()) reloads THIS document with its own cache-busting
+     query param, but that only forces a fresh fetch of index.html itself —
+     it does nothing about app.js/style.css, which the browser (and GitHub
+     Pages' own CDN) are free to keep serving stale from cache under their
+     unchanged, un-busted URLs, since a URL's query string is part of what
+     the cache key is. Giving these two a version-tied query string makes
+     every real release a brand-new URL, which can never be a stale cache
+     hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
+     version.json's "version" on every release — all three drift back out
+     of sync otherwise, and this exact bug comes right back. -->
+<link rel="stylesheet" href="style.css?v=v2026.09.17.7">
 </head>
 <body>
 
@@ -343,6 +355,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=v2026.09.17.7"></script>
 </body>
 </html>
