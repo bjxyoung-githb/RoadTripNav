@@ -121,7 +121,10 @@
 
     <div id="myTripsPanel" class="hidden" style="margin-bottom:18px;">
       <h3>My past trip logs <button class="help-btn" data-help="my-trips" title="Help" aria-label="Help">?</button></h3>
-      <div id="myTripsList" class="legs-list"></div>
+      <details id="myTripsDetails">
+        <summary id="myTripsSummary">Show past legs</summary>
+        <div id="myTripsList" class="legs-list" style="margin-top:10px;"></div>
+      </details>
     </div>
 
     <h1>Plan your trip's next leg <button class="help-btn" data-help="setup-overview" title="Help" aria-label="Help">?</button></h1>
