@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.17.5';
+const APP_VERSION = 'v2026.09.17.6';
 
 /* ============================== UTILITIES ============================== */
 
@@ -143,12 +143,30 @@ const LS_OWN_TRIPS = 'rtnav_own_trips_v1';
 const LS_LAST_MEDIA_CLEANUP = 'rtnav_last_media_cleanup_v1';
 const MEDIA_CLEANUP_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000; // run at most ~once/day
 
+// De-dupes by pin (keeping the earliest startedAt for each) — belt and
+// suspenders alongside the pin-already-known check in rememberOwnTrip()
+// below, so a duplicate that already made it into localStorage (e.g. from
+// before that fix) quietly cleans itself up the next time this loads,
+// rather than needing anyone to notice and clear it by hand.
 function loadOwnTrips() {
-  try { return JSON.parse(localStorage.getItem(LS_OWN_TRIPS) || '[]'); }
+  let list;
+  try { list = JSON.parse(localStorage.getItem(LS_OWN_TRIPS) || '[]'); }
   catch (e) { return []; }
+  const seen = new Map();
+  for (const t of list) {
+    if (!t || !t.pin) continue;
+    const existing = seen.get(t.pin);
+    if (!existing || t.startedAt < existing.startedAt) seen.set(t.pin, t);
+  }
+  const deduped = Array.from(seen.values()).sort((a, b) => a.startedAt - b.startedAt);
+  if (deduped.length !== list.length) {
+    localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(deduped));
+  }
+  return deduped;
 }
 function rememberOwnTrip(pin) {
   const list = loadOwnTrips();
+  if (list.some((t) => t.pin === pin)) return; // reconnecting to an existing trip, not a new one
   list.push({ pin, startedAt: Date.now() });
   while (list.length > 100) list.shift(); // cap growth; this is a lot of trips
   localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(list));
@@ -3791,14 +3809,17 @@ function checkForActiveLeg() {
 // you've ever shared under gets remembered locally (loadOwnTrips(), via
 // rememberOwnTrip() in startSharing()) purely so cleanupExpiredMedia()
 // knew what to check on — this is just putting that same list to a second,
-// user-facing use.
+// user-facing use. Collapsed by default (a real trip can rack up a lot of
+// legs) — the summary line names how many without needing to open it.
 function renderMyTripsList() {
   const panel = document.getElementById('myTripsPanel');
   const el = document.getElementById('myTripsList');
+  const summary = document.getElementById('myTripsSummary');
   if (!panel || !el) return;
   const trips = loadOwnTrips().slice().reverse(); // most recent first
   if (!trips.length) { panel.classList.add('hidden'); return; }
   panel.classList.remove('hidden');
+  if (summary) summary.textContent = `Show past legs (${trips.length})`;
   el.innerHTML = trips.map((t) => {
     const when = new Date(t.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     return `<div class="leg-item">
@@ -3863,7 +3884,13 @@ async function resumeSharing(pin) {
     state.share.lastPushAt = 0;
     state.share.lastPushLoc = null;
     state.share.viewerCount = 0;
-    rememberOwnTrip(pin);
+    // No rememberOwnTrip() here — this is reconnecting to a pin that was
+    // already recorded when it was first created in startSharing(), not a
+    // new trip. Calling it again here (a bug fixed in v2026.09.17.6) was
+    // adding a fresh duplicate entry to "My past trip logs" every single
+    // time a leg got resumed — e.g. after any app-update reload — which is
+    // exactly why that list could balloon to several entries in one day
+    // despite only ever actually starting sharing once or twice.
     subscribeOwnEvents(pin);
     subscribeViewerCount(pin);
     subscribeViewerMessages(pin);
@@ -3973,7 +4000,12 @@ const HELP_TOPICS = {
       deletes the trip log itself, so this list keeps working for the
       whole trip. Photos do auto-expire after 90 days to keep Firestore's
       free tier happy (comments and video links never expire), which is
-      well past any trip this app was built for.</p>`,
+      well past any trip this app was built for.</p>
+      <p>Collapsed by default since a real trip can rack up a lot of
+      legs — tap "Show past legs" to expand it. One entry gets added each
+      time you tap Start Sharing for a genuinely new leg; reconnecting to
+      one already in progress (like resuming after a reload) reuses its
+      existing entry rather than adding another.</p>`,
   },
   'dashboard-overview': {
     title: 'The drive dashboard',
