@@ -371,6 +371,27 @@ avoids that.
   introduce hand-editing it and easy to miss reading it back — they look
   nearly identical) used to cause exactly this too; v2026.09.16.2 made the
   check tolerant of either.
+- **"Reload Now" doesn't actually change anything — the banner just comes
+  right back** (the real fix landed in v2026.09.17.7) — this was the
+  biggest one: the reload button only forced a fresh fetch of the HTML page
+  itself. The `<script>`/`<link>` tags inside that page pointing at
+  `app.js` and `style.css` had no cache-buster of their own, so the browser
+  (and GitHub Pages' own CDN) were free to keep handing back a stale cached
+  copy of the actual code under those unchanged URLs — you'd get a genuinely
+  fresh page shell that then loaded the same old script, which still
+  reported the same old version, which still saw a newer version.json,
+  which asked you to reload again, forever. `index.html` now points at
+  `app.js?v=<version>` and `style.css?v=<version>` instead of the bare
+  filenames, so a real release is always a brand-new URL neither the
+  browser nor GitHub Pages has ever cached — this can't come back as long
+  as that `?v=` gets bumped alongside `APP_VERSION` and `version.json` on
+  every future release (index.html has a comment marking exactly where).
+  If you were stuck in this loop before updating past v2026.09.17.7: the
+  very next "Reload Now" tap should break it on its own, since the
+  cache-busted `index.html` fetch was already working correctly — it just
+  didn't matter before, because everything past the page shell was stale.
+  If it somehow still doesn't budge, clear the site's data in your phone
+  browser's settings (or reinstall the home-screen icon) as a last resort.
 - **The update banner covers up the version footer at the bottom of the
   screen** — fixed in v2026.09.16.3. The banner floats over the page rather
   than pushing content up, so nothing previously made room for it; this
