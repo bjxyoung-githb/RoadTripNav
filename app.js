@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.17.7';
+const APP_VERSION = 'v2026.09.17.8';
 
 /* ============================== UTILITIES ============================== */
 
@@ -3820,25 +3820,62 @@ function checkForActiveLeg() {
 // knew what to check on — this is just putting that same list to a second,
 // user-facing use. Collapsed by default (a real trip can rack up a lot of
 // legs) — the summary line names how many without needing to open it.
+//
+// This index is local to this one browser only — nothing is stored about
+// it in Firestore. That's normally invisible, but it means a couple of
+// things can wipe it clean even though the actual trip logs it points to
+// (photos, comments, routes) are completely untouched and still sit safely
+// in Firestore exactly as before: clearing this site's browser data (the
+// fallback suggested for the update-cache bug fixed in v2026.09.17.7),
+// switching phones, or opening the app in a different browser/profile.
+// Rather than just showing an empty list with no way back in that case,
+// the panel always stays visible (never hides itself at zero) and offers
+// a manual "already have a passcode" box — anyone who still has an old
+// share link or passcode (checking sent texts to family is the easiest
+// way) can paste the code back in here to get it listed again.
 function renderMyTripsList() {
   const panel = document.getElementById('myTripsPanel');
   const el = document.getElementById('myTripsList');
   const summary = document.getElementById('myTripsSummary');
   if (!panel || !el) return;
-  const trips = loadOwnTrips().slice().reverse(); // most recent first
-  if (!trips.length) { panel.classList.add('hidden'); return; }
   panel.classList.remove('hidden');
-  if (summary) summary.textContent = `Show past legs (${trips.length})`;
-  el.innerHTML = trips.map((t) => {
-    const when = new Date(t.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    return `<div class="leg-item">
-      <span>${escapeHtml(when)} <span class="muted" style="font-size:12px;">(passcode ${escapeHtml(t.pin)})</span></span>
-      <button type="button" class="ghost-btn small view-my-trip-btn" data-pin="${escapeHtml(t.pin)}">👀 View</button>
-    </div>`;
-  }).join('');
+  const trips = loadOwnTrips().slice().reverse(); // most recent first
+  if (summary) summary.textContent = trips.length ? `Show past legs (${trips.length})` : 'Show past legs';
+  el.innerHTML = trips.length
+    ? trips.map((t) => {
+        const when = new Date(t.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        return `<div class="leg-item">
+          <span>${escapeHtml(when)} <span class="muted" style="font-size:12px;">(passcode ${escapeHtml(t.pin)})</span></span>
+          <button type="button" class="ghost-btn small view-my-trip-btn" data-pin="${escapeHtml(t.pin)}">👀 View</button>
+        </div>`;
+      }).join('')
+    : '<div class="muted" style="padding:4px 0 10px;">Nothing remembered on this device yet. If you have an old passcode or share link handy, add it below to get it listed again.</div>';
   el.querySelectorAll('.view-my-trip-btn').forEach((btn) => {
     btn.addEventListener('click', () => watchTripFromLink(btn.dataset.pin));
   });
+}
+
+// Manual recovery path for the local-only index described above: pastes a
+// passcode (or a whole share link — anything with a 6-digit code in it)
+// back into "My past trip logs" without needing to actually reconnect as
+// the owner. Doesn't verify the trip still exists before adding it — an
+// invalid/expired one just shows "No trip found" when actually viewed,
+// same as typing a bad passcode into "Watch someone else's shared trip"
+// always has.
+function wireMyTripsAdd() {
+  const btn = document.getElementById('addKnownPinBtn');
+  const input = document.getElementById('addKnownPinInput');
+  if (!btn || !input) return;
+  const submit = () => {
+    const m = input.value.match(/(\d{6})/);
+    if (!m) { toast('Enter the 6-digit passcode (or paste the whole share link).', 4000); return; }
+    rememberOwnTrip(m[1]);
+    input.value = '';
+    renderMyTripsList();
+    toast('Added to My past trip logs.', 2500);
+  };
+  btn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 }
 
 async function resumeActiveLeg(snap) {
@@ -4014,7 +4051,14 @@ const HELP_TOPICS = {
       legs — tap "Show past legs" to expand it. One entry gets added each
       time you tap Start Sharing for a genuinely new leg; reconnecting to
       one already in progress (like resuming after a reload) reuses its
-      existing entry rather than adding another.</p>`,
+      existing entry rather than adding another.</p>
+      <p>This list only lives in this browser, not in the cloud — so
+      clearing this site's browser data, switching phones, or opening the
+      app somewhere else starts it empty again, even though every trip it
+      pointed to is completely unaffected and still sitting in Firestore
+      exactly as it was. If that happens, paste an old passcode or share
+      link into the box at the bottom (checking texts you sent family is
+      the easiest way to find one) to add it back to the list.</p>`,
   },
   'dashboard-overview': {
     title: 'The drive dashboard',
@@ -4484,6 +4528,7 @@ function init() {
   wireSettingsModal();
   wireSetupScreen();
   wireEndLeg();
+  wireMyTripsAdd();
   wireVoiceControls();
   startVoiceKeepAlive();
   wireWakeLock();
