@@ -25,7 +25,7 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.09.17.7">
+<link rel="stylesheet" href="style.css?v=v2026.09.17.8">
 </head>
 <body>
 
@@ -136,6 +136,10 @@
       <details id="myTripsDetails">
         <summary id="myTripsSummary">Show past legs</summary>
         <div id="myTripsList" class="legs-list" style="margin-top:10px;"></div>
+        <div class="row" style="margin-top:10px;">
+          <input id="addKnownPinInput" type="text" inputmode="numeric" placeholder="Already have an old passcode or link? Paste it here" maxlength="200">
+          <button id="addKnownPinBtn" class="ghost-btn small">Add</button>
+        </div>
       </details>
     </div>
 
@@ -355,6 +359,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="app.js?v=v2026.09.17.7"></script>
+<script src="app.js?v=v2026.09.17.8"></script>
 </body>
 </html>
