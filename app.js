@@ -5,7 +5,7 @@
 // bottom of the planning screen — mainly so a quick glance (in an incognito
 // tab, say) can confirm a phone is actually running the latest upload
 // rather than a cached older copy.
-const APP_VERSION = 'v2026.09.16.4';
+const APP_VERSION = 'v2026.09.17.5';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1091,18 +1091,55 @@ function updateDriveTimer() {
 
 function voiceSupported() { return 'speechSynthesis' in window; }
 
+// Android Chrome (and some other Chromium builds) has a long-standing bug
+// where the speech queue can silently wedge after the phone's screen has
+// been locked/unlocked a few times, or just sits a while: speak() stops
+// producing any sound but speechSynthesis.speaking reports true forever
+// after, with no error and nothing to catch. This is the standard
+// workaround most apps hitting that bug use — periodically nudging the
+// engine with pause()+resume() so it never gets the chance to wedge shut
+// in the first place. Harmless to run all the time: it's a no-op unless
+// something is actually (supposedly) speaking.
+let voiceKeepAliveTimer = null;
+function startVoiceKeepAlive() {
+  if (voiceKeepAliveTimer || !voiceSupported()) return;
+  voiceKeepAliveTimer = setInterval(() => {
+    try {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    } catch (e) { /* ignore */ }
+  }, 10000);
+}
+
+// Surfaces a voice failure instead of swallowing it silently — throttled
+// so a bad patch of driving (or a phone that just doesn't like this
+// engine right now) doesn't spam toasts on every single turn.
+function reportVoiceFailure(detail) {
+  const now = Date.now();
+  if (state._lastVoiceErrorToast && now - state._lastVoiceErrorToast < 120000) return;
+  state._lastVoiceErrorToast = now;
+  toast('🔇 Voice guidance failed' + (detail ? ' (' + detail + ')' : '') + ' — try muting and re-enabling it in Settings.', 6000);
+}
+
 function speak(text) {
   if (!voiceSupported() || !state.settings.voiceEnabled) return;
   try {
     window.speechSynthesis.cancel(); // don't let announcements pile up/overlap
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.0;
+    u.onerror = (e) => reportVoiceFailure(e && e.error);
     window.speechSynthesis.speak(u);
-  } catch (e) { /* ignore */ }
+  } catch (e) { reportVoiceFailure(e && e.message); }
 }
 
 // Unlocks audio on browsers (notably iOS Safari) that require the first
-// speechSynthesis call to originate from a direct user tap.
+// speechSynthesis call to originate from a direct user tap. This alone
+// only proves the API *accepted* an utterance, not that anything was
+// actually heard — see the audible confirmation phrase spoken right after
+// this in wireVoiceControls(), which is what actually catches "I turned it
+// on but there was no sound" at setup time instead of an hour into a drive.
 function unlockVoice() {
   if (!voiceSupported()) return false;
   try {
@@ -1119,14 +1156,84 @@ function updateVoiceButtons() {
   if (btn) btn.textContent = label;
 }
 
+/* ============================== SCREEN WAKE LOCK ============================== */
+// Keeps the phone's screen from timing out while actively navigating —
+// the web equivalent of what a native app like Google Maps gets for free.
+// This is also the direct fix for how voice guidance went silent on the
+// S24: many Android phones auto-lock on detected motion (exactly what a
+// phone mounted in a moving car looks like), and a locked/backgrounded tab
+// is also what let the Chrome speech engine wedge itself shut in the first
+// place — so this addresses the root cause, not just the voice symptom.
+let wakeLock = null;
+
+function wakeLockSupported() { return 'wakeLock' in navigator; }
+
+async function requestNavWakeLock() {
+  if (!wakeLockSupported() || !state.route) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    // The OS releases it on its own the moment the tab is hidden (screen
+    // off, app backgrounded, phone's own power button, etc.) — that's by
+    // design and can't be prevented, only re-acquired once the tab is
+    // visible again. See the visibilitychange listener in wireWakeLock().
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (e) {
+    // Most common causes: the tab isn't visible yet, or battery saver is
+    // blocking it. Not worth bothering the driver over — it just retries
+    // next time the tab becomes visible or a leg starts.
+  }
+}
+
+function releaseNavWakeLock() {
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
+function wireWakeLock() {
+  if (!wakeLockSupported()) return;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') requestNavWakeLock();
+  });
+}
+
 /* ============================== MAIN NAVIGATION LOOP ============================== */
 
+// Projects (lat, lon) onto the line segment from (lat1,lon1) to (lat2,lon2),
+// clamped to the segment's endpoints, using a local flat-earth
+// approximation — plenty accurate over segments this short (route
+// geometry points are never more than a few miles apart), and much
+// cheaper than doing this properly on a sphere.
+function closestPointOnSegment(lat, lon, lat1, lon1, lat2, lon2) {
+  const latScale = 69.0; // ~miles per degree of latitude, everywhere
+  const lonScale = 69.0 * Math.cos(lat * Math.PI / 180); // miles per degree of longitude, at this latitude
+  const dx = (lon2 - lon1) * lonScale, dy = (lat2 - lat1) * latScale;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? (((lon - lon1) * lonScale) * dx + ((lat - lat1) * latScale) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return { lat: lat1 + t * (lat2 - lat1), lon: lon1 + t * (lon2 - lon1), t };
+}
+
+// Finds where the driver is relative to the route. This measures distance
+// to the nearest point ANYWHERE ON the route's line, not just to the
+// nearest recorded vertex — a long dead-straight rural highway can have
+// vertices a mile or more apart (ORS returns real OSM road geometry, which
+// only gets points where the road actually bends), so sitting in the
+// middle of one of those stretches used to measure as "half a mile off
+// the route" even while driving exactly on it, which is what was
+// triggering false "looks like you're taking a different way" prompts.
+// idx still lands on one of the two segment endpoints (whichever the
+// projected point is nearer to) so the existing cumDist/cumDur/elevation
+// lookups elsewhere, which all index by vertex, keep working unchanged —
+// only the off-route distance itself was wrong before.
 function findNearestIndex(lat, lon) {
   const { coords } = state.route;
+  if (coords.length < 2) return { idx: 0, dist: coords.length ? haversineMiles(lat, lon, coords[0][1], coords[0][0]) : Infinity };
   let best = 0, bestD = Infinity;
-  for (let i = 0; i < coords.length; i++) {
-    const d = haversineMiles(lat, lon, coords[i][1], coords[i][0]);
-    if (d < bestD) { bestD = d; best = i; }
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [lon1, lat1] = coords[i];
+    const [lon2, lat2] = coords[i + 1];
+    const proj = closestPointOnSegment(lat, lon, lat1, lon1, lat2, lon2);
+    const d = haversineMiles(lat, lon, proj.lat, proj.lon);
+    if (d < bestD) { bestD = d; best = proj.t < 0.5 ? i : i + 1; }
   }
   return { idx: best, dist: bestD };
 }
@@ -1202,7 +1309,7 @@ async function performReroute(curLat, curLon) {
     state.route = newRoute;
     state.announced = new Set();
     state.arrivalAnnounced = false;
-    drawRoute();
+    drawRoute(true);
     persistActiveLeg(); // the route just changed — keep the overnight-resume snapshot current
     if (state.share.active) {
       // Send the new route to anyone watching too — see
@@ -1317,18 +1424,29 @@ async function onLocationUpdate() {
   const elevFt = currentElevationFt();
   document.getElementById('statElevation').textContent = elevFt != null ? elevFt.toLocaleString() + ' ft' : '–';
 
-  // Determine current/next step
+  // Determine current/next step. `steps[stepIdx]` is the road you're
+  // actually driving on right now — but ORS's instruction for a step
+  // describes the maneuver that put you onto that road (i.e. the turn you
+  // already made), not the turn coming up. The upcoming maneuver is
+  // described by the NEXT step, which begins exactly where the current one
+  // ends — the same point distToManeuver already counts down to. So the
+  // distance is measured off stepIdx, but the instruction shown/spoken has
+  // to come from stepIdx + 1, or this always reads one turn stale (correct
+  // distance, wrong street/direction — see the "turn right" pic that was
+  // actually the next-to-last turn).
   const steps = state.route.steps;
   let stepIdx = steps.findIndex((s) => idx <= s.way_points[1]);
   if (stepIdx === -1) stepIdx = steps.length - 1;
   state.currentStepIndex = stepIdx;
   const step = steps[stepIdx];
+  const upcomingStepIdx = Math.min(stepIdx + 1, steps.length - 1);
+  const upcomingStep = steps[upcomingStepIdx];
   const distToManeuver = Math.max(0, state.route.cumDist[step.way_points[1]] - traveled);
-  document.getElementById('statNextTurn').textContent = step.instruction;
+  document.getElementById('statNextTurn').textContent = upcomingStep.instruction;
   document.getElementById('statNextTurnDist').textContent = 'in ' + fmtMiles(distToManeuver);
 
-  renderSteps(stepIdx);
-  announceStepIfDue(stepIdx, step, distToManeuver);
+  renderSteps(upcomingStepIdx);
+  announceStepIfDue(upcomingStepIdx, upcomingStep, distToManeuver);
 
   if (remaining < 0.05) {
     if (!state.arrivalAnnounced) {
@@ -1576,7 +1694,7 @@ function updateBaseLayerForSpeed(speedMph) {
   }
 }
 
-function drawRoute() {
+function drawRoute(isReroute) {
   if (state.routeLine) state.map.removeLayer(state.routeLine);
   const latlngs = state.route.coords.map((c) => [c[1], c[0]]);
   state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(state.map);
@@ -1614,10 +1732,19 @@ function drawRoute() {
     state.pinMarker = null;
   }
 
-  const bounds = state.pinMarker
-    ? state.routeLine.getBounds().extend(state.pinMarker.getLatLng())
-    : state.routeLine.getBounds();
-  state.map.fitBounds(bounds, { padding: [30, 30] });
+  // Skip the re-fit on a reroute — a reroute only spans from here to the
+  // destination, so re-fitting bounds on every one would yank your own
+  // view away from wherever you'd panned to (e.g. looking back at photo
+  // pins from earlier in the drive) and crop the map down to just the
+  // remaining leg, same issue this caused on family's watch screens (see
+  // renderWatchTrip()). You're normally in auto-follow anyway, which
+  // recenters on your live position regardless of this.
+  if (!isReroute) {
+    const bounds = state.pinMarker
+      ? state.routeLine.getBounds().extend(state.pinMarker.getLatLng())
+      : state.routeLine.getBounds();
+    state.map.fitBounds(bounds, { padding: [30, 30] });
+  }
 }
 
 /* ============================== FIREBASE / TRIP SHARING ============================== */
@@ -3139,7 +3266,15 @@ function renderWatchTrip() {
       if (state.watch.routeLine) { map.removeLayer(state.watch.routeLine); }
       const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
       state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
-      map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
+      // Only snap/zoom the viewer's map on the very first draw. A reroute
+      // sends a new route that only spans from the traveler's current spot
+      // onward, so re-fitting bounds on every redraw would yank a watcher's
+      // view away from wherever they'd zoomed/panned to (e.g. looking back
+      // over the whole day's pins and photos) and crop it down to just the
+      // remaining leg — reading as if the earlier part of the trip had been
+      // erased, when it's still there, just off-screen. The toast below is
+      // enough of a heads-up; it shouldn't also shove their map around.
+      if (isFirstDraw) map.fitBounds(state.watch.routeLine.getBounds(), { padding: [30, 30] });
       state.watch.routeCoordsVersion = routeVersion;
       if (!isFirstDraw) toast("The traveler's route changed — map updated.", 5000);
     }
@@ -3466,6 +3601,7 @@ function wireSetupScreen() {
       drawRoute();
       onLocationUpdate();
       renderSharePanel();
+      requestNavWakeLock();
       const choiceMsg = describeRouteChoice(route);
       if (choiceMsg) toast(choiceMsg, 6000);
     } catch (e) {
@@ -3587,6 +3723,12 @@ function wireVoiceControls() {
     enableBtn.textContent = '✓ Voice Guidance Enabled';
     updateVoiceButtons();
     toast('Voice guidance enabled.', 3000);
+    // Speak an actual, audible confirmation right now — tapping this
+    // button used to only flip a setting, so "enabled" could mean anything
+    // from working fine to permanently silent, and there was no way to
+    // tell which until a turn came up mid-drive. This catches that gap on
+    // the spot, every time voice guidance is turned on from here.
+    setTimeout(() => speak('Voice guidance enabled. You should hear turn announcements like this one.'), 300);
   });
 
   toggleBtn.addEventListener('click', () => {
@@ -3595,6 +3737,7 @@ function wireVoiceControls() {
     saveSettings(state.settings);
     updateVoiceButtons();
     toast(state.settings.voiceEnabled ? 'Voice guidance on.' : 'Voice guidance muted.', 2500);
+    if (state.settings.voiceEnabled) setTimeout(() => speak('Voice guidance on.'), 300);
   });
 
   updateVoiceButtons();
@@ -3607,6 +3750,7 @@ function wireEndLeg() {
     if (state.share.active) stopSharing();
     state.route = null;
     state.currentLegLabel = null;
+    releaseNavWakeLock();
     clearActiveLeg(); // the leg is genuinely done — nothing to offer resuming later
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('setupScreen').classList.remove('hidden');
@@ -3629,6 +3773,7 @@ function wireEndLeg() {
 function checkForActiveLeg() {
   const banner = document.getElementById('resumeLegBanner');
   const snap = loadActiveLeg();
+  renderMyTripsList();
   if (!snap || !snap.route) { banner.classList.add('hidden'); return; }
   document.getElementById('resumeLegDest').textContent = snap.legLabel || snap.destLabel || 'your destination';
   banner.classList.remove('hidden');
@@ -3637,6 +3782,33 @@ function checkForActiveLeg() {
     clearActiveLeg();
     banner.classList.add('hidden');
   };
+}
+
+// Lets you pull a past leg's shared trip log (photos, comments, the route
+// it followed) back up after you've ended it — the same view family got
+// from your link, including the same Save/Download and Share buttons on
+// every photo, since this reuses the exact same watch screen. Every pin
+// you've ever shared under gets remembered locally (loadOwnTrips(), via
+// rememberOwnTrip() in startSharing()) purely so cleanupExpiredMedia()
+// knew what to check on — this is just putting that same list to a second,
+// user-facing use.
+function renderMyTripsList() {
+  const panel = document.getElementById('myTripsPanel');
+  const el = document.getElementById('myTripsList');
+  if (!panel || !el) return;
+  const trips = loadOwnTrips().slice().reverse(); // most recent first
+  if (!trips.length) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  el.innerHTML = trips.map((t) => {
+    const when = new Date(t.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return `<div class="leg-item">
+      <span>${escapeHtml(when)} <span class="muted" style="font-size:12px;">(passcode ${escapeHtml(t.pin)})</span></span>
+      <button type="button" class="ghost-btn small view-my-trip-btn" data-pin="${escapeHtml(t.pin)}">👀 View</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.view-my-trip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => watchTripFromLink(btn.dataset.pin));
+  });
 }
 
 async function resumeActiveLeg(snap) {
@@ -3657,6 +3829,7 @@ async function resumeActiveLeg(snap) {
   if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
   drawRoute();
   onLocationUpdate();
+  requestNavWakeLock();
 
   if (snap.pin) {
     await resumeSharing(snap.pin);
@@ -3785,6 +3958,22 @@ const HELP_TOPICS = {
       re-run it later without re-entering the destination — handy for a
       route you plan more than once, or want to double check before you
       actually drive it.</p>`,
+  },
+  'my-trips': {
+    title: 'My past trip logs',
+    html: `
+      <p>Every leg you've ever shared shows up here, most recent first —
+      tap <b>👀 View</b> to pull one back up any time, even long after
+      you've ended that leg. It opens the exact same screen family sees
+      from your share link: the route you drove, every photo and comment,
+      and the same <b>⬇ Save</b> / <b>📤 Share</b> buttons on each photo, so
+      you never need to remember a passcode or re-send a link just to grab
+      a picture you took earlier in the trip.</p>
+      <p>Ending a leg only stops the live position updates — it never
+      deletes the trip log itself, so this list keeps working for the
+      whole trip. Photos do auto-expire after 90 days to keep Firestore's
+      free tier happy (comments and video links never expire), which is
+      well past any trip this app was built for.</p>`,
   },
   'dashboard-overview': {
     title: 'The drive dashboard',
@@ -4255,6 +4444,8 @@ function init() {
   wireSetupScreen();
   wireEndLeg();
   wireVoiceControls();
+  startVoiceKeepAlive();
+  wireWakeLock();
   wireSharing();
   wireWatchScreen();
   wireEventActions();
