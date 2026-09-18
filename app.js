@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.17.8';
+const APP_VERSION = 'v2026.09.17.9';
 
 /* ============================== UTILITIES ============================== */
 
@@ -55,6 +55,26 @@ function fmtMiles(mi) {
   if (mi == null || isNaN(mi)) return '–';
   if (mi < 0.1) return Math.round(mi * 5280) + ' ft';
   return mi.toFixed(mi < 10 ? 1 : 0) + ' mi';
+}
+
+// A simple "how far along the drive are we" bar, shared by the driver
+// dashboard (#tripProgressFill/#tripProgressPct) and the watch screen
+// (#watchProgressFill/#watchProgressPct) — same markup, same math, just
+// fed from each side's own idea of "how far traveled" and "how far total"
+// (see the two call sites: onLocationUpdate() for the driver,
+// renderWatchTrip() for a viewer using the shared route's cumDist data).
+function renderTripProgressBar(fillId, pctId, traveledMiles, totalMiles) {
+  const fillEl = document.getElementById(fillId);
+  const pctEl = document.getElementById(pctId);
+  if (!fillEl || !pctEl) return;
+  if (!totalMiles || totalMiles <= 0 || traveledMiles == null) {
+    fillEl.style.width = '0%';
+    pctEl.textContent = '–';
+    return;
+  }
+  const pct = Math.max(0, Math.min(100, (traveledMiles / totalMiles) * 100));
+  fillEl.style.width = pct.toFixed(1) + '%';
+  pctEl.textContent = `${Math.round(pct)}% · ${fmtMiles(traveledMiles)} of ${fmtMiles(totalMiles)}`;
 }
 
 function fmtDurationShort(sec) {
@@ -1433,6 +1453,7 @@ async function onLocationUpdate() {
   const remaining = Math.max(0, total - traveled);
 
   document.getElementById('statMilesLeft').textContent = fmtMiles(remaining);
+  renderTripProgressBar('tripProgressFill', 'tripProgressPct', traveled, total);
 
   const remainingDur = Math.max(0, state.route.totalDur - state.route.cumDur[idx]);
   document.getElementById('statEta').textContent = fmtClockFromNowPlus(remainingDur);
@@ -3355,6 +3376,7 @@ function renderWatchTrip() {
         const totalDur = trip.routeCoords[trip.routeCoords.length - 1].cumDur;
         const remainingSec = Math.max(0, totalDur - current.point.cumDur);
         status += ` · Hours to go: ${Math.round(remainingSec / 3600)}`;
+        renderTripProgressBar('watchProgressFill', 'watchProgressPct', current.point.cumDist, trip.totalMiles);
       }
     }
     status += (ageSec > 120 ? ' — last known position may be stale' : '');
@@ -4065,8 +4087,10 @@ const HELP_TOPICS = {
     html: `
       <p>This is your live view while driving a calculated leg.</p>
       <ul>
-        <li>The banner at the top gives your next turn; the row below shows
-        miles left, ETA (with a date if it won't arrive today), speed, and
+        <li>The banner at the top gives your next turn; below that, a
+        <b>Trip progress</b> bar (<b>?</b> for details) shows how far
+        through the whole leg you are; the row below that shows miles left,
+        ETA (with a date if it won't arrive today), speed, and
         elevation.</li>
         <li>Tap anywhere on the map to see the drive time/ETA to that spot —
         on your route or off it entirely.</li>
@@ -4079,6 +4103,17 @@ const HELP_TOPICS = {
         <li><b>🏁 End This Leg / Plan Next Leg</b> wraps up this leg and
         takes you back to planning the next one.</li>
       </ul>`,
+  },
+  'trip-progress': {
+    title: 'Trip progress',
+    html: `
+      <p>A simple visual of how far through this leg you are: the
+      percentage and mileage are miles driven so far out of the leg's total
+      distance, based on the same route data everything else on this screen
+      uses.</p>
+      <p>Family watching your shared trip see this exact same bar on their
+      screen, worked out from the route and position you're already sharing
+      with them — no extra setup needed.</p>`,
   },
   'map-driver': {
     title: 'Using the map',
@@ -4239,9 +4274,10 @@ const HELP_TOPICS = {
         <li>The status line at top tells you if things are current, if the
         traveler is taking a break overnight (⏸ paused), or if updates have
         gone stale.</li>
-        <li>Below that: current weather and elevation at their position,
-        then the live map — their position updates as an arrow pointing
-        their direction of travel.</li>
+        <li>Below that: a trip progress bar (percent of the total distance
+        driven so far), then current weather and elevation at their
+        position, then the live map — their position updates as an arrow
+        pointing their direction of travel.</li>
         <li>Tap anywhere on the map for an estimated drive time from their
         current spot to that point (an estimate, not a live calculation —
         see the map's own <b>?</b> for why).</li>
