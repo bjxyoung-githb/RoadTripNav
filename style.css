@@ -275,7 +275,22 @@ details[open] summary::after { transform: rotate(90deg); }
 }
 .leaflet-tooltip.peak-tooltip::before { border-top-color: rgba(245,166,35,.6); }
 
+/* Permanent zone-name label on each time zone's boundary line — see
+   drawTimezoneLines(). Deliberately quieter/smaller than the peak-elevation
+   tooltip above since this one is always on screen rather than appearing
+   only near a nearby landmark. */
+.leaflet-tooltip.tz-tooltip {
+  background: rgba(10,16,30,.65); color: #fff; border: 1px solid rgba(255,255,255,.3);
+  border-radius: 6px; padding: 2px 6px; font-size: 10px; font-weight: 700;
+  white-space: nowrap; box-shadow: none; letter-spacing: .02em;
+}
+
 /* Share & Trip Log panel */
+.trip-title-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 10px;
+}
+.trip-title-text { font-size: 17px; font-weight: 700; }
 .share-pin-box {
   text-align: center; background: #0d1526; border: 1px solid var(--panel-border);
   border-radius: 10px; padding: 14px; margin-bottom: 12px;
@@ -338,6 +353,12 @@ details[open] summary::after { transform: rotate(90deg); }
   background: rgba(59,130,246,.18); border-radius: 10px; color: var(--accent);
   height: 32px; line-height: 32px; align-self: flex-start;
 }
+/* Same idea for the automatic "crossed into a new time zone" alert — a
+   teal badge, distinct from both the amber state and blue city badges. */
+.tz-event-icon {
+  background: rgba(20,184,166,.18); border-radius: 10px; color: #14b8a6;
+  height: 32px; line-height: 32px; align-self: flex-start;
+}
 .event-thumb {
   width: 60px; height: 60px; object-fit: cover; border-radius: 8px; flex-shrink: 0;
   border: 1px solid var(--panel-border); background: #0d1526;
@@ -389,6 +410,13 @@ details[open] summary::after { transform: rotate(90deg); }
   font-size: 15px; background: var(--accent); border: 2px solid #fff; border-radius: 50%;
   box-shadow: 0 1px 4px rgba(0,0,0,.6); filter: none;
 }
+/* System-generated time-zone-crossing pin — teal badge, same treatment as
+   the state/city ones above. */
+.tz-marker-icon {
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  font-size: 15px; background: #14b8a6; border: 2px solid #fff; border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,.6); filter: none;
+}
 .live-marker { background: none; border: none; }
 .live-marker-icon {
   font-size: 24px; line-height: 1; text-align: center;
@@ -402,6 +430,7 @@ details[open] summary::after { transform: rotate(90deg); }
 .leaflet-tooltip.live-tooltip::before { border-top-color: rgba(59,130,246,.7); }
 
 /* Watch (viewer) screen */
+.watch-trip-title { font-size: 19px; font-weight: 800; margin: 2px 0 8px; }
 .watch-status { font-size: 13px; margin: 10px 0 2px; min-height: 18px; }
 .watch-status-row { display: flex; align-items: center; gap: 6px; }
 .watch-status-row .watch-status { margin: 0; flex: 1; }
