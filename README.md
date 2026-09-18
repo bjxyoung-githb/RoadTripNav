@@ -116,6 +116,12 @@ avoids that.
   marks your actual destination separately from the blue route-end marker,
   with a warning banner, so you know you'll need to finish the last stretch
   on foot or by eye rather than being silently routed somewhere else.
+- **Trip progress bar** — a simple visual right under the turn banner
+  showing what percent of the leg's total distance you've driven so far,
+  alongside the actual mileage ("38% · 62 mi of 165 mi"). Family watching
+  your shared trip see the identical bar on their screen too, worked out
+  from the same route and position data they already get — nothing extra
+  to set up.
 - **Off-route reroute offer** — if you drift noticeably off the calculated
   route, by default the app asks rather than assuming: a banner pops up
   ("Looks like you're taking a different way. Recalculate the route from
