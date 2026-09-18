@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.17.9';
+const APP_VERSION = 'v2026.09.18.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -176,7 +176,9 @@ const MEDIA_CLEANUP_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000; // run at most ~once/
 // suspenders alongside the pin-already-known check in rememberOwnTrip()
 // below, so a duplicate that already made it into localStorage (e.g. from
 // before that fix) quietly cleans itself up the next time this loads,
-// rather than needing anyone to notice and clear it by hand.
+// rather than needing anyone to notice and clear it by hand. If only one
+// of the duplicate copies has a label (from a rename), that label is kept
+// rather than silently dropped.
 function loadOwnTrips() {
   let list;
   try { list = JSON.parse(localStorage.getItem(LS_OWN_TRIPS) || '[]'); }
@@ -185,7 +187,10 @@ function loadOwnTrips() {
   for (const t of list) {
     if (!t || !t.pin) continue;
     const existing = seen.get(t.pin);
-    if (!existing || t.startedAt < existing.startedAt) seen.set(t.pin, t);
+    if (!existing) { seen.set(t.pin, t); continue; }
+    const keep = t.startedAt < existing.startedAt ? t : existing;
+    const label = existing.label || t.label;
+    seen.set(t.pin, label ? { ...keep, label } : keep);
   }
   const deduped = Array.from(seen.values()).sort((a, b) => a.startedAt - b.startedAt);
   if (deduped.length !== list.length) {
@@ -193,11 +198,30 @@ function loadOwnTrips() {
   }
   return deduped;
 }
-function rememberOwnTrip(pin) {
+function rememberOwnTrip(pin, label) {
   const list = loadOwnTrips();
   if (list.some((t) => t.pin === pin)) return; // reconnecting to an existing trip, not a new one
-  list.push({ pin, startedAt: Date.now() });
+  const entry = { pin, startedAt: Date.now() };
+  if (label) entry.label = label;
+  list.push(entry);
   while (list.length > 100) list.shift(); // cap growth; this is a lot of trips
+  localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(list));
+}
+// Lets "My past trip logs" be renamed after the fact — e.g. when no label
+// was given at Calculate Route time. Passing an empty/blank label clears it
+// back to the plain date display.
+function renameOwnTrip(pin, label) {
+  const list = loadOwnTrips();
+  const t = list.find((x) => x.pin === pin);
+  if (!t) return;
+  if (label) t.label = label; else delete t.label;
+  localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(list));
+}
+// Removes one entry from "My past trip logs" on this device only. The
+// actual trip log in Firestore (photos, comments, route) is untouched and
+// can always be found again by passcode via the "Add" recovery box.
+function forgetOwnTrip(pin) {
+  const list = loadOwnTrips().filter((t) => t.pin !== pin);
   localStorage.setItem(LS_OWN_TRIPS, JSON.stringify(list));
 }
 
@@ -1915,7 +1939,7 @@ async function startSharing() {
     state.share.paused = false;
     state.share.pausedAt = 0;
     state.share.pausedLoc = null;
-    rememberOwnTrip(pin);
+    rememberOwnTrip(pin, state.currentLegLabel);
     subscribeOwnEvents(pin);
     subscribeViewerCount(pin);
     subscribeViewerMessages(pin);
@@ -3417,6 +3441,17 @@ function renderLegsList() {
     div.className = 'leg-item';
     div.innerHTML = `<span>${leg.label || leg.destLabel}</span>`;
     const btnRow = document.createElement('div');
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'ghost-btn small';
+    renameBtn.textContent = '✏️';
+    renameBtn.title = 'Rename';
+    renameBtn.onclick = () => {
+      const name = window.prompt('Name for this saved leg:', leg.label || leg.destLabel || '');
+      if (name === null) return; // cancelled
+      leg.label = name.trim() || null;
+      saveTrip(state.trip);
+      renderLegsList();
+    };
     const goBtn = document.createElement('button');
     goBtn.className = 'ghost-btn small';
     goBtn.textContent = 'Use as destination';
@@ -3434,6 +3469,7 @@ function renderLegsList() {
       saveTrip(state.trip);
       renderLegsList();
     };
+    btnRow.appendChild(renameBtn);
     btnRow.appendChild(goBtn);
     btnRow.appendChild(delBtn);
     div.appendChild(btnRow);
@@ -3866,14 +3902,38 @@ function renderMyTripsList() {
   el.innerHTML = trips.length
     ? trips.map((t) => {
         const when = new Date(t.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        const title = t.label ? escapeHtml(t.label) + ` <span class="muted" style="font-size:12px;">${escapeHtml(when)} ·` : `${escapeHtml(when)} <span class="muted" style="font-size:12px;">`;
         return `<div class="leg-item">
-          <span>${escapeHtml(when)} <span class="muted" style="font-size:12px;">(passcode ${escapeHtml(t.pin)})</span></span>
-          <button type="button" class="ghost-btn small view-my-trip-btn" data-pin="${escapeHtml(t.pin)}">👀 View</button>
+          <span>${title} passcode ${escapeHtml(t.pin)}</span></span>
+          <div style="display:flex;gap:4px;">
+            <button type="button" class="ghost-btn small view-my-trip-btn" data-pin="${escapeHtml(t.pin)}">👀 View</button>
+            <button type="button" class="ghost-btn small rename-my-trip-btn" data-pin="${escapeHtml(t.pin)}" title="Rename">✏️</button>
+            <button type="button" class="ghost-btn small delete-my-trip-btn" data-pin="${escapeHtml(t.pin)}" title="Remove from this list">🗑</button>
+          </div>
         </div>`;
       }).join('')
     : '<div class="muted" style="padding:4px 0 10px;">Nothing remembered on this device yet. If you have an old passcode or share link handy, add it below to get it listed again.</div>';
   el.querySelectorAll('.view-my-trip-btn').forEach((btn) => {
     btn.addEventListener('click', () => watchTripFromLink(btn.dataset.pin));
+  });
+  el.querySelectorAll('.rename-my-trip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const pin = btn.dataset.pin;
+      const current = loadOwnTrips().find((t) => t.pin === pin);
+      const name = window.prompt('Name for this trip/leg (leave blank to clear):', (current && current.label) || '');
+      if (name === null) return; // cancelled
+      renameOwnTrip(pin, name.trim());
+      renderMyTripsList();
+    });
+  });
+  el.querySelectorAll('.delete-my-trip-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const pin = btn.dataset.pin;
+      if (!window.confirm('Remove this from "My past trip logs" on this device?\n\nThe trip log itself (photos, comments, route) is not deleted and can still be viewed by passcode — this only tidies up this list.')) return;
+      forgetOwnTrip(pin);
+      renderMyTripsList();
+      toast('Removed from My past trip logs.', 2500);
+    });
   });
 }
 
@@ -4074,6 +4134,12 @@ const HELP_TOPICS = {
       time you tap Start Sharing for a genuinely new leg; reconnecting to
       one already in progress (like resuming after a reload) reuses its
       existing entry rather than adding another.</p>
+      <p>Forgot to give a leg a name when you set it up? Tap <b>✏️</b> on
+      any entry to name (or rename) it any time — it'll show that name
+      here instead of just the date. Tap <b>🗑</b> to remove an entry you
+      don't need cluttering the list anymore; that only tidies up this
+      device's list, it doesn't touch the actual trip log, so you can
+      always add the passcode back later if you want it again.</p>
       <p>This list only lives in this browser, not in the cloud — so
       clearing this site's browser data, switching phones, or opening the
       app somewhere else starts it empty again, even though every trip it
