@@ -289,6 +289,14 @@ avoids that.
   leg's route, photos, and comments afterward (anyone can still open it,
   they just won't see your position move); see **My past trip logs**
   below for how you pull it back up yourself.
+- **Naming the trip** — a **✏️** button next to the trip title at the top
+  of this panel lets you set (or change) what this trip/leg is called, any
+  time — before you start sharing, mid-drive, whatever. It's the same
+  "Label this leg" text you can optionally type in when calculating a
+  route; setting or changing it here keeps that, "My past trip logs," and
+  what watchers see all in sync automatically. Leave it blank and your own
+  screen just shows "Untitled trip" as a reminder it's not set; watchers
+  simply see no title at all until you give it one.
 - **Automatic state-crossing comments** — about a mile after your GPS
   crosses into a new US state, the app drops a comment for you: state name,
   nickname, capital, population, state bird/tree/flower, the date it joined
@@ -332,6 +340,26 @@ avoids that.
   fire everywhere. Like the state comment, the city list and facts are
   bundled with the app (not fetched live) and are a snapshot as of when
   this was built.
+- **Time zone lines + crossing alert** — dashed, labeled lines on both your
+  map and every watcher's map mark the boundaries between the practical US
+  time zones (Eastern, Central, Mountain, Mountain (Arizona), Pacific), so
+  you can see at a glance which zone you're in and what's coming up.
+  Crossing one — confirmed a mile past the line, same jitter-proofing as
+  the state comment above — pops up an on-screen alert and reads it aloud,
+  and tells you whether your clock actually needs to change *right now*,
+  not just whether you crossed an official zone line: it compares the real
+  current UTC offset of the old and new zone (via your browser's own time
+  zone support) rather than just their names, because Arizona doesn't
+  observe Daylight Saving Time and so for part of the year matches Pacific
+  Time exactly despite being labeled "Mountain (Arizona)". Unlike the
+  state/city trivia comments, this alert fires for you whether or not
+  you're actively sharing a leg — your clock is about to change either
+  way — but (like everything else in the trip log) it's only added there,
+  for watchers to see, while you are sharing. Zone boundaries are bundled
+  with the app (not fetched live), sourced from the official IANA time
+  zone database, and — like the state boundaries — simplified for "which
+  zone is this point in," not turn-by-turn precision. Scoped to the
+  continental US; Alaska and Hawaii aren't included.
 - **My past trip logs** (setup screen) — every leg you've ever started
   sharing shows up in a list here, most recent first, each with a **👀
   View** button that drops you straight into the exact same screen family
@@ -740,12 +768,33 @@ avoids that.
   from its main city, or a city you'd expect to see doesn't trigger at
   all, that's the curated list's boundaries — let me know and I can adjust
   either the include/exclude list or a city's circle size.
+- **No time zone crossing alert showed up** — unlike the state/city
+  comments, this one isn't tied to active sharing, so check first whether
+  voice guidance is actually on (Settings) if you expected to hear it —
+  the on-screen toast should still have appeared either way. Same
+  once-per-crossing-per-page-load behavior as the state comment: reloading
+  the app mid-drive silently re-learns whatever zone you're in at that
+  moment (no alert for it), then resumes alerting normally from the next
+  new zone onward. And like the other two, it needs a full mile confirmed
+  past the line before firing, so check a little further along the road
+  first.
+- **The time zone alert said the clock isn't changing, but I definitely
+  crossed a zone line** — that's expected specifically around Arizona: it
+  compares the real current UTC offset of the old and new zone, not just
+  their names, and for part of the year (whenever Pacific Time is
+  observing Daylight Saving) Arizona's "Mountain (Arizona)" zone has the
+  exact same offset as Pacific. The alert is telling you the clock
+  genuinely doesn't need to move right now, not misdetecting the
+  crossing.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
 - No live traffic congestion or accident data (no free nationwide source
   exists) — road conditions are weather-based only.
 - "Mountains nearby" is a distance-based list, not verified visibility.
+- Time zone lines/alerts are scoped to the continental US (Alaska and
+  Hawaii aren't included), and the boundary lines are simplified for
+  "which zone is this point in," not drawn to exact survey precision.
 - Fuel planner uses a manually-set range, not real fuel-level telemetry.
 - Everything requires an internet connection (Starlink, WiFi, or cellular)
   to fetch new routes, weather, and points of interest; there's no offline
