@@ -198,6 +198,24 @@ input:disabled { opacity: .6; }
 .turn-instruction { font-size: 19px; font-weight: 800; line-height: 1.25; }
 .turn-dist { font-size: 13px; opacity: .9; margin-top: 3px; }
 
+/* Overall trip-completion bar — shared markup/classes on both the driver
+   dashboard (#tripProgressFill/#tripProgressPct) and the watch screen
+   (#watchProgressFill/#watchProgressPct), so they look identical to family
+   watching along. */
+.trip-progress { padding: 10px 12px 4px; background: #0d1526; }
+.trip-progress-caption {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--muted); margin-bottom: 6px;
+}
+.trip-progress-pct { font-weight: 700; color: var(--text); }
+.trip-progress-track {
+  height: 10px; border-radius: 6px; background: var(--panel-border); overflow: hidden;
+}
+.trip-progress-fill {
+  height: 100%; border-radius: 6px; background: var(--accent);
+  transition: width .5s ease; min-width: 2px;
+}
+
 .stats-row {
   display: flex; align-items: center; gap: 0; background: #0d1526;
   border-bottom: 1px solid var(--panel-border); padding: 10px 12px;
