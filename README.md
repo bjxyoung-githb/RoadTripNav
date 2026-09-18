@@ -304,6 +304,13 @@ avoids that.
   they were. There's an "Add" box at the bottom of the list for exactly
   that situation: paste in an old passcode or share link (checking texts
   you sent family is the easiest way to find one) and it gets listed again.
+  Forgot to give a leg a name when you set it up (or just want to change
+  it)? Tap **✏️** on any entry to name or rename it — the name replaces
+  the plain date in the list. Tap **🗑** to remove an entry you don't need
+  cluttering the list; that only tidies up this device's list, the actual
+  trip log isn't touched, so you can always add the passcode back later.
+  The same **✏️** rename option is on **Saved legs** too (the separate
+  "Use as destination" list on the setup screen), for the same reason.
 - **Messages from Family** — anyone watching your shared trip has a **💬
   Send a message** box right below their map on the watch screen. They type
   their name once (their phone remembers it after that) and a short
