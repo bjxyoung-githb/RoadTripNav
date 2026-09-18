@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.18.1';
+const APP_VERSION = 'v2026.09.18.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -279,6 +279,19 @@ const state = {
   map: null, routeLine: null, currentMarker: null, destMarker: null, poiMarkers: [], peakMarkers: [],
   eventMarkers: [],
   etaTapMarker: null, // marker for the driver-side tap-anywhere-for-ETA popup — see handleMapTapForEta()
+  // Tracks which US state the driver is currently confirmed to be in, for
+  // the automatic "crossed into a new state" comment — see
+  // checkUSStateCrossing() below. Persists for the whole page session
+  // (not reset per-leg): the state you're physically in doesn't change
+  // just because you started a new leg.
+  usStateTrack: { confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
+  // Same idea, for the automatic "just entered a city" comment — see
+  // checkUSCityCrossing() below. `confirmed` here is meaningfully
+  // different from usStateTrack's: null is a normal, common, ongoing
+  // state ("not currently inside any tracked city's circle"), not just
+  // "we don't know yet" — hence the separate `initialized` flag to mark
+  // the one-time startup fix.
+  usCityTrack: { initialized: false, confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
@@ -1470,6 +1483,9 @@ async function onLocationUpdate() {
 
   if (!state.route) return;
 
+  checkUSStateCrossing(cur);
+  checkUSCityCrossing(cur);
+
   const { idx, dist } = findNearestIndex(cur.lat, cur.lon);
   nearestIndexCache = idx;
   const traveled = state.route.cumDist[idx];
@@ -2436,6 +2452,296 @@ async function addComment(text) {
   }
 }
 
+/* ============================== US STATE CROSSINGS ============================== */
+// Automatically drops a "you crossed into a new state" trivia comment about
+// a mile after the driver's GPS enters a new US state — visible in the trip
+// log to the driver and every watcher exactly like a hand-typed comment
+// (same Firestore "events" collection, same map pins), plus spoken aloud
+// once any in-progress turn announcement has finished. Boundary polygons +
+// facts (capital/bird/tree/flower/nickname/statehood/population/current
+// government control) live in assets/us-states-data.js
+// (window.US_STATES_DATA), loaded before this file so it's ready offline
+// the moment GPS starts — no extra network round-trip mid-drive.
+const US_STATE_CROSS_MILES = 1; // how far past the line before announcing
+
+// Standard ray-casting point-in-ring test (works for both outer boundaries
+// and holes — pointInPolygons() below decides which is which).
+function pointInRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+      (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+// polygons: array of polygons; each polygon is an array of rings where
+// ring 0 is the outer boundary and any further rings are holes cut out of
+// it (standard GeoJSON MultiPolygon shape) — matters for a handful of
+// states with detached islands/holes near the coast.
+function pointInPolygons(lon, lat, polygons) {
+  for (const poly of polygons) {
+    if (!poly.length || !pointInRing(lon, lat, poly[0])) continue;
+    let inHole = false;
+    for (let h = 1; h < poly.length; h++) {
+      if (pointInRing(lon, lat, poly[h])) { inHole = true; break; }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+// Bounding-box reject first (cheap) before the real point-in-polygon test —
+// keeps this affordable to run on every single GPS fix.
+function findStateForPoint(lat, lon) {
+  const list = window.US_STATES_DATA;
+  if (!list) return null;
+  for (const st of list) {
+    const b = st.bbox;
+    if (lon < b[0] || lon > b[2] || lat < b[1] || lat > b[3]) continue;
+    if (pointInPolygons(lon, lat, st.polygons)) return st;
+  }
+  return null;
+}
+
+function humanizePopulation(n) {
+  if (typeof n !== 'number') return 'unknown';
+  if (n >= 1000000) return `about ${(n / 1000000).toFixed(1)} million`;
+  return `about ${(Math.round(n / 1000) * 1000).toLocaleString()}`;
+}
+
+// One line for the on-screen comment text and the map-pin popup — reads
+// straight off the Firestore fields written by addStateCrossingComment()
+// below, so the trip-log display always matches exactly what got saved.
+function stateEventFactsLine(ev) {
+  return `${ev.stateName} (${ev.nickname}) · Capital: ${ev.capital} · `
+    + `Population: ${ev.population.toLocaleString()} · Bird: ${ev.bird} · `
+    + `Tree: ${ev.tree} · Flower: ${ev.flower} · Admitted to the Union: ${ev.statehood} · `
+    + `GDP: $${ev.gdpBillions.toLocaleString()}B (${ev.gdpPctOfUS}% of U.S. GDP) · `
+    + `Government: ${ev.control}`;
+}
+// Spoken version, built from the freshly detected state object (see
+// findStateForPoint()) at the moment of crossing.
+function stateFactsSpoken(st) {
+  return `Just entered ${st.name}, the ${st.nickname}, admitted to the Union ${st.statehood}. `
+    + `Its capital is ${st.capital}, population ${humanizePopulation(st.population)}. `
+    + `The state bird is the ${st.bird}, the state tree is the ${st.tree}, `
+    + `and the state flower is the ${st.flower}. `
+    + `${st.name} generates about ${st.gdpPctOfUS} percent of U.S. GDP. `
+    + `${st.name} currently has ${/^[aeiou]/i.test(st.control) ? 'an' : 'a'} ${st.control.replace(/ \(.*/, '')}.`;
+}
+
+// Same defer-and-retry pattern as announceViewerMessage() — never cut off
+// an in-progress turn instruction; give up on voice (but not the comment
+// itself, which is still in the trip log either way) after a few tries.
+function announceStateCrossing(st, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 6; // a bit more patient than messages — this fires rarely
+  if (!voiceSupported() || !state.settings.voiceEnabled) return;
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    if (attemptsLeft > 0) setTimeout(() => announceStateCrossing(st, attemptsLeft - 1), 1500);
+    return;
+  }
+  speak(stateFactsSpoken(st));
+}
+
+async function addStateCrossingComment(st) {
+  const sh = state.share;
+  if (!sh.active) return; // nothing to attach it to — see checkUSStateCrossing()
+  const loc = state.loc;
+  try {
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: 'state',
+      stateName: st.name,
+      stateAbbr: st.abbr,
+      capital: st.capital,
+      population: st.population,
+      bird: st.bird,
+      tree: st.tree,
+      flower: st.flower,
+      nickname: st.nickname,
+      statehood: st.statehood,
+      gdpBillions: st.gdpBillions,
+      gdpPctOfUS: st.gdpPctOfUS,
+      control: st.control,
+      lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      elevationFt: currentElevationFt(),
+      tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    // Best-effort — a missed system comment shouldn't interrupt the drive
+    // with an error toast the way a failed manual comment would.
+  }
+}
+
+// Called from onLocationUpdate() on every GPS fix while a route is active.
+// Requires being confirmed inside the new state for US_STATE_CROSS_MILES of
+// actual travel (not just one fix past the line) before announcing, so a
+// route that briefly clips a corner of a neighboring state, or ordinary GPS
+// jitter right at the border, doesn't fire a false announcement.
+function checkUSStateCrossing(loc) {
+  if (!window.US_STATES_DATA || !loc) return;
+  const track = state.usStateTrack;
+  const detected = findStateForPoint(loc.lat, loc.lon);
+  if (!detected) return; // between polygons (simplification gap) or no fix yet — leave tracking as-is
+
+  if (track.confirmed === null) {
+    // First state we can determine this page session — the one you're
+    // starting in. Adopt it silently; you already know where you are.
+    track.confirmed = detected.name;
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (detected.name === track.confirmed) {
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (track.candidate !== detected.name) {
+    track.candidate = detected.name;
+    track.candidateMiles = 0;
+  } else if (track.lastLoc) {
+    track.candidateMiles += haversineMiles(track.lastLoc.lat, track.lastLoc.lon, loc.lat, loc.lon);
+  }
+  track.lastLoc = loc;
+  if (track.candidateMiles >= US_STATE_CROSS_MILES) {
+    track.confirmed = detected.name;
+    track.candidate = null;
+    track.candidateMiles = 0;
+    if (state.share.active) {
+      addStateCrossingComment(detected);
+      announceStateCrossing(detected);
+    }
+  }
+}
+
+/* ============================== US CITY CROSSINGS ============================== */
+// Same idea as the state-crossing comment above, but for entering one of
+// ~85 major, non-suburb US cities — city name, population, incorporation
+// year, primary industry, and current mayor/party. Facts + a simple
+// center-point-and-radius "geofence" (not a real municipal boundary — see
+// assets/us-cities-data.js) live in window.US_CITIES_DATA, loaded before
+// this file. Suburbs of a bigger neighboring city (Mesa/Tempe/Scottsdale
+// near Phoenix, Henderson near Las Vegas, etc.) are simply left out of the
+// dataset entirely, so driving through one triggers nothing — only the
+// metro's own principal city is ever announced.
+const US_CITY_CONFIRM_MILES = 0.2; // small stability buffer, not a deliberate "wait a mile" design like states
+
+// Picks the best-matching city circle a point falls inside, preferring the
+// one it's proportionally deepest into (distance/radius ratio) in the rare
+// case two cities' circles overlap (e.g. Tampa/St. Petersburg across the
+// bay) rather than always taking whichever happens to come first in the list.
+function findCityForPoint(lat, lon) {
+  const list = window.US_CITIES_DATA;
+  if (!list) return null;
+  let best = null, bestRatio = Infinity;
+  for (const c of list) {
+    const d = haversineMiles(lat, lon, c.lat, c.lon);
+    if (d > c.radiusMiles) continue;
+    const ratio = d / c.radiusMiles;
+    if (ratio < bestRatio) { bestRatio = ratio; best = c; }
+  }
+  return best;
+}
+
+// One line for the on-screen comment text and the map-pin popup — reads
+// straight off the Firestore fields written by addCityCrossingComment().
+function cityEventFactsLine(ev) {
+  return `${ev.cityName}, ${ev.stateAbbr} · Population: ${ev.population.toLocaleString()} · `
+    + `Incorporated: ${ev.incorporated} · Primary industry: ${ev.industry} · `
+    + `Mayor: ${ev.mayor} (${ev.party})`;
+}
+function cityFactsSpoken(c) {
+  const partyBit = /nonpartisan/i.test(c.party)
+    ? `an officially nonpartisan mayor's office, currently held by ${c.mayor}`
+    : `a mayor from the ${c.party} party, ${c.mayor}`;
+  return `Just entered ${c.name}, ${c.stateName}. Population ${humanizePopulation(c.population)}, `
+    + `incorporated in ${c.incorporated}. Its primary industry is ${c.industry}. `
+    + `${c.name} has ${partyBit}.`;
+}
+
+// Same defer-and-retry pattern used for state crossings and viewer messages
+// — never talk over an in-progress turn instruction.
+function announceCityCrossing(c, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 6;
+  if (!voiceSupported() || !state.settings.voiceEnabled) return;
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    if (attemptsLeft > 0) setTimeout(() => announceCityCrossing(c, attemptsLeft - 1), 1500);
+    return;
+  }
+  speak(cityFactsSpoken(c));
+}
+
+async function addCityCrossingComment(c) {
+  const sh = state.share;
+  if (!sh.active) return;
+  const loc = state.loc;
+  try {
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: 'city',
+      cityName: c.name,
+      stateAbbr: c.state,
+      stateName: c.stateName,
+      population: c.population,
+      incorporated: c.incorporated,
+      industry: c.industry,
+      mayor: c.mayor,
+      party: c.party,
+      lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      elevationFt: currentElevationFt(),
+      tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    // Best-effort, same as addStateCrossingComment().
+  }
+}
+
+// Called from onLocationUpdate() alongside checkUSStateCrossing(). A city
+// circle is usually much smaller than a state, so this only asks for a
+// short confirmed distance inside it (US_CITY_CONFIRM_MILES) before
+// announcing — just enough to shrug off GPS jitter right at the edge, not
+// a deliberate "wait before telling you" design like the state feature's
+// full mile.
+function checkUSCityCrossing(loc) {
+  if (!window.US_CITIES_DATA || !loc) return;
+  const track = state.usCityTrack;
+  const detected = findCityForPoint(loc.lat, loc.lon);
+  const detectedName = detected ? detected.name : null;
+
+  if (!track.initialized) {
+    // First fix ever this page session — silently adopt wherever you
+    // happen to be, whether that's inside a tracked city's circle or not.
+    // No announcement for the city you're starting in/near.
+    track.initialized = true;
+    track.confirmed = detectedName;
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (detectedName === track.confirmed) {
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (track.candidate !== detectedName) {
+    track.candidate = detectedName;
+    track.candidateMiles = 0;
+  } else if (track.lastLoc) {
+    track.candidateMiles += haversineMiles(track.lastLoc.lat, track.lastLoc.lon, loc.lat, loc.lon);
+  }
+  track.lastLoc = loc;
+  if (track.candidateMiles >= US_CITY_CONFIRM_MILES) {
+    track.confirmed = detectedName;
+    track.candidate = null;
+    track.candidateMiles = 0;
+    // Only a real, named city firing counts as "entering" — confirming a
+    // null (i.e. confirming that you've left the last city) is silent.
+    if (detected && state.share.active) {
+      addCityCrossingComment(detected);
+      announceCityCrossing(detected);
+    }
+  }
+}
+
 // Builds the "📍 lat, lon · temp · elevation" bit shown next to the
 // timestamp on every comment/photo/video — whatever was known at the
 // moment it was added (see addPhoto()/addVideoLink()/addComment()).
@@ -2467,6 +2773,18 @@ function renderEventItem(ev) {
       <div class="item-main">${escapeHtml(ev.text || '')}</div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
+  if (ev.type === 'state') {
+    return `<div class="event-item"><div class="event-icon state-event-icon">🤖</div><div>
+      <div class="item-main">🏁 Just entered ${escapeHtml(ev.stateName || '')} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
+      <div class="item-sub">${escapeHtml(stateEventFactsLine(ev))}</div>
+      <div class="item-sub">${whenLine}</div></div></div>`;
+  }
+  if (ev.type === 'city') {
+    return `<div class="event-item"><div class="event-icon city-event-icon">🏙️</div><div>
+      <div class="item-main">🏁 Just entered ${escapeHtml(ev.cityName || '')} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
+      <div class="item-sub">${escapeHtml(cityEventFactsLine(ev))}</div>
+      <div class="item-sub">${whenLine}</div></div></div>`;
+  }
   if (ev.type === 'video') {
     const thumb = ev.driveFileId
       ? `<img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" class="event-thumb" alt="Video thumbnail" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'event-icon',textContent:'🎥'}))">`
@@ -2491,12 +2809,24 @@ function renderEventItem(ev) {
 }
 
 function makeEventMarker(ev) {
-  const iconEmoji = ev.type === 'comment' ? '💬' : ev.type === 'video' ? '🎥' : '📷';
-  const icon = L.divIcon({
-    className: 'event-marker',
-    html: `<div class="event-marker-icon">${iconEmoji}</div>`,
-    iconSize: [26, 26], iconAnchor: [13, 24],
-  });
+  const iconEmoji = ev.type === 'comment' ? '💬' : ev.type === 'state' ? '🤖' : ev.type === 'city' ? '🏙️' : ev.type === 'video' ? '🎥' : '📷';
+  const icon = ev.type === 'state'
+    ? L.divIcon({
+        className: 'event-marker',
+        html: `<div class="event-marker-icon state-marker-icon">${iconEmoji}</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 27],
+      })
+    : ev.type === 'city'
+    ? L.divIcon({
+        className: 'event-marker',
+        html: `<div class="event-marker-icon city-marker-icon">${iconEmoji}</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 27],
+      })
+    : L.divIcon({
+        className: 'event-marker',
+        html: `<div class="event-marker-icon">${iconEmoji}</div>`,
+        iconSize: [26, 26], iconAnchor: [13, 24],
+      });
   const when = (ev.createdAt && ev.createdAt.toDate)
     ? ev.createdAt.toDate().toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
     : 'just now';
@@ -2505,6 +2835,10 @@ function makeEventMarker(ev) {
   let popupHtml;
   if (ev.type === 'comment') {
     popupHtml = `<b>💬 Comment</b><br>${escapeHtml(ev.text || '')}${metaLine}`;
+  } else if (ev.type === 'state') {
+    popupHtml = `<b>🤖 Just entered ${escapeHtml(ev.stateName || '')}</b> <span class="muted" style="font-size:11px;">(system comment)</span><br>${escapeHtml(stateEventFactsLine(ev))}${metaLine}`;
+  } else if (ev.type === 'city') {
+    popupHtml = `<b>🏙️ Just entered ${escapeHtml(ev.cityName || '')}</b> <span class="muted" style="font-size:11px;">(system comment)</span><br>${escapeHtml(cityEventFactsLine(ev))}${metaLine}`;
   } else if (ev.type === 'video') {
     const thumb = ev.driveFileId
       ? `<br><img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" style="max-width:200px;max-height:200px;" onerror="this.remove()">`
@@ -4292,14 +4626,30 @@ const HELP_TOPICS = {
         <li>Use 📷/🎥/💬 to drop a geotagged photo, video link, or comment —
         each is tagged with GPS coordinates, temperature, and elevation at
         that moment.</li>
+        <li>🤖 Crossing a state line adds one of these automatically too —
+        capital, population, GDP, bird, tree, flower, nickname, statehood
+        date, and which party currently runs that state's government, about
+        a mile past the line. It's tagged with a distinct amber icon so it's
+        obviously not something you typed, spoken aloud once any turn
+        instruction in progress finishes, and shows up for watchers exactly
+        like your own comments do.</li>
+        <li>🏙️ Driving into one of about 85 major US cities does the same
+        thing with a blue icon instead — population, when it was
+        incorporated, its primary industry, and the current mayor and
+        party. Suburbs of a bigger neighboring city (Tempe/Mesa/Scottsdale
+        near Phoenix, Henderson near Las Vegas, and so on) don't get their
+        own separate announcement — only the main city does, even if your
+        route runs straight through the suburb.</li>
         <li>Stopping overnight without ending the leg? Tap <b>⏸ Pause for
         the Night</b> so family sees a friendly "taking a break" message
         instead of a stale-data warning; it clears itself once you're
         driving again.</li>
         <li><b>👀 X watching now</b> only shows on your own screen, so you
         know if anyone actually has the trip open.</li>
-        <li><b>Stop Sharing</b> ends it for good — the link/passcode stop
-        working.</li>
+        <li><b>Stop Sharing</b> only stops live position updates — the same
+        link/passcode keeps working afterward for anyone to view the route,
+        photos, and comments; see <b>My past trip logs</b> on the setup
+        screen for how to pull it back up yourself.</li>
       </ul>`,
   },
   'viewer-messages': {
@@ -4398,7 +4748,17 @@ const HELP_TOPICS = {
       <p>Every photo, video link, and comment the traveler has added along
       the way, newest first, each tagged with the GPS coordinates,
       temperature, and elevation at the moment it was added. Tap a photo to
-      view it larger, or a video link to open it.</p>`,
+      view it larger, or a video link to open it.</p>
+      <p>You'll also see a 🤖 entry with an amber icon each time the
+      traveler crosses into a new US state — that one's added automatically
+      by the app, not typed by them, with that state's capital, population,
+      GDP, bird, tree, flower, nickname, statehood date, and current
+      government control.</p>
+      <p>A 🏙️ entry with a blue icon means the same thing for one of about
+      85 major US cities — population, when it was incorporated, its
+      primary industry, and the current mayor and party. Suburbs of a
+      bigger city (Tempe near Phoenix, Henderson near Las Vegas, etc.)
+      don't get their own entry — only the main city does.</p>`,
   },
   'watch-send-message': {
     title: 'Send a message',
