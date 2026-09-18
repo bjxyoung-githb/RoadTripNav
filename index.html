@@ -25,7 +25,7 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.09.17.8">
+<link rel="stylesheet" href="style.css?v=v2026.09.17.9">
 </head>
 <body>
 
@@ -201,6 +201,15 @@
         <div id="watchStatus" class="watch-status muted">Connecting…</div>
         <button class="help-btn" data-help="watch-live-overview" title="Help" aria-label="Help">?</button>
       </div>
+      <div class="trip-progress">
+        <div class="trip-progress-caption">
+          <span>Trip progress</span>
+          <span id="watchProgressPct" class="trip-progress-pct">–</span>
+        </div>
+        <div class="trip-progress-track">
+          <div id="watchProgressFill" class="trip-progress-fill" style="width:0%"></div>
+        </div>
+      </div>
       <div id="watchWeather" class="watch-weather muted"></div>
       <div id="watchElevation" class="watch-weather muted"></div>
       <div id="watchMap" class="watch-map"></div>
@@ -266,6 +275,16 @@
   <div id="turnBanner" class="turn-banner">
     <div id="statNextTurn" class="turn-instruction">–</div>
     <div id="statNextTurnDist" class="turn-dist">Next turn</div>
+  </div>
+
+  <div class="trip-progress">
+    <div class="trip-progress-caption">
+      <span id="tripProgressLabel">Trip progress</span> <button class="help-btn" data-help="trip-progress" title="Help" aria-label="Help">?</button>
+      <span id="tripProgressPct" class="trip-progress-pct">–</span>
+    </div>
+    <div class="trip-progress-track">
+      <div id="tripProgressFill" class="trip-progress-fill" style="width:0%"></div>
+    </div>
   </div>
 
   <div class="stats-row">
@@ -359,6 +378,6 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="app.js?v=v2026.09.17.8"></script>
+<script src="app.js?v=v2026.09.17.9"></script>
 </body>
 </html>
