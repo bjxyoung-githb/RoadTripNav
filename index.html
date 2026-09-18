@@ -25,7 +25,7 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.09.18.3">
+<link rel="stylesheet" href="style.css?v=v2026.09.18.5">
 </head>
 <body>
 
@@ -197,6 +197,7 @@
     </div>
 
     <div id="watchLive" class="hidden">
+      <div id="watchTripTitle" class="watch-trip-title hidden"></div>
       <div class="watch-status-row">
         <div id="watchStatus" class="watch-status muted">Connecting…</div>
         <button class="help-btn" data-help="watch-live-overview" title="Help" aria-label="Help">?</button>
@@ -378,8 +379,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="assets/us-states-data.js?v=v2026.09.18.3"></script>
-<script src="assets/us-cities-data.js?v=v2026.09.18.3"></script>
-<script src="app.js?v=v2026.09.18.3"></script>
+<script src="assets/us-states-data.js?v=v2026.09.18.5"></script>
+<script src="assets/us-cities-data.js?v=v2026.09.18.5"></script>
+<script src="assets/us-timezones-data.js?v=v2026.09.18.5"></script>
+<script src="app.js?v=v2026.09.18.5"></script>
 </body>
 </html>
