@@ -289,6 +289,49 @@ avoids that.
   leg's route, photos, and comments afterward (anyone can still open it,
   they just won't see your position move); see **My past trip logs**
   below for how you pull it back up yourself.
+- **Automatic state-crossing comments** — about a mile after your GPS
+  crosses into a new US state, the app drops a comment for you: state name,
+  nickname, capital, population, state bird/tree/flower, the date it joined
+  the Union, its GDP and share of U.S. GDP, and which party currently
+  controls that state's government (trifecta or divided). It's tagged with
+  a distinct amber 🤖 icon (in the trip log and on the map) so it's obvious
+  at a glance that it's system-generated, not something you typed. It's
+  read aloud through voice guidance too — waiting for any in-progress turn
+  instruction to finish first, never talking over it — and shows up for
+  watchers exactly like your own comments do. Only fires while you're
+  actively sharing a leg (nothing to attach it to otherwise), and only
+  once you're a full mile past the actual state line, so ordinary GPS
+  jitter or a route that briefly clips a neighboring state's corner won't
+  fire a false one. The state facts and boundaries are bundled with the
+  app itself (not fetched live), so this keeps working even with no signal
+  right at the state line — population/GDP figures and which party
+  currently governs are current as of when this was built and will drift
+  slightly out of date over time (elections, new estimates). Both this and
+  the city-crossing comment below start with "Just entered ___" when
+  spoken.
+- **Automatic city-crossing comments** — the same idea, for entering one
+  of about 85 major, non-suburb US cities: city name, population, the year
+  it was incorporated, its primary industry, and the current mayor and
+  party (or "officially nonpartisan" where that's how the office actually
+  works, which is true for most US cities). Tagged with a distinct blue
+  🏙️ icon (different from the state comment's amber one) so the two are
+  easy to tell apart at a glance, spoken the same waits-for-a-turn-to-
+  finish way, and visible to watchers exactly like your own comments.
+  Suburbs of a bigger neighboring city (Tempe/Mesa/Chandler/Scottsdale/
+  Glendale/Peoria near Phoenix, Henderson/North Las Vegas near Las Vegas,
+  and similar) are simply left out of the list entirely, so driving
+  through one doesn't trigger its own separate announcement — only the
+  metro's own principal city does, and in practice a suburb close to
+  downtown usually falls inside that city's own trigger area anyway, so
+  you still get told you've reached the metro area. Because reliably
+  sourcing population/industry/incorporation-year/mayor for anywhere near
+  all ~19,000 incorporated places in the US isn't realistic, this is
+  intentionally limited to a curated list of major cities — most small
+  towns along your route (this includes places like Page, AZ) won't
+  trigger anything; only the state-crossing comment above is guaranteed to
+  fire everywhere. Like the state comment, the city list and facts are
+  bundled with the app (not fetched live) and are a snapshot as of when
+  this was built.
 - **My past trip logs** (setup screen) — every leg you've ever started
   sharing shows up in a list here, most recent first, each with a **👀
   View** button that drops you straight into the exact same screen family
@@ -662,6 +705,41 @@ avoids that.
   speech-recognition limitations (accent, road noise, weak connection on
   Safari, which can need network access to transcribe) — just tap 🎤 Reply
   again and try once more.
+- **No automatic state-crossing comment showed up** — it only fires while
+  you're actively sharing a leg (nothing to attach a comment to otherwise,
+  same as manual comments), and only once you're a full mile past the
+  actual state line, so check the trip log a little further along before
+  assuming it's missing. It's also a once-per-crossing thing per page
+  load — reloading the app mid-drive re-learns the state you're currently
+  in silently (no announcement for wherever you happen to reload), then
+  resumes announcing normally from the next new state onward.
+- **A state's population/GDP/government-control fact looks out of date** —
+  those three change over time (new estimates, elections); everything else
+  (capital, bird, tree, flower, nickname, statehood date) doesn't. The
+  figures are bundled with the app as of when a given version was built,
+  not fetched live, so they'll drift slightly stale between updates —
+  that's expected, not a bug, though let me know if one looks meaningfully
+  wrong and I'll correct the underlying data.
+- **No automatic city-crossing comment showed up** — the same "actively
+  sharing" requirement as states applies, plus this only covers a curated
+  list of about 85 major, non-suburb US cities (see the feature bullet
+  above) — most small and mid-size towns along your route simply aren't in
+  it and won't trigger anything; that's the intended scope, not a bug.
+  It also uses a circular "roughly within city limits" area (built from
+  the city's land area) rather than its real, often irregular municipal
+  boundary, since bundling exact boundaries for that many places isn't
+  practical — so it can fire a little before or after you'd cross an
+  actual city-limit sign, especially for oddly-shaped or very spread-out
+  cities.
+- **A city's population/mayor/party/industry fact looks off, or a suburb
+  got its own separate announcement** — population and the current
+  mayor/party are the two that go stale over time (new estimates,
+  elections — mayoral terms are short and change more often than
+  governors, so this one drifts faster than the state data); primary
+  industry and incorporation year don't. If a suburb announced separately
+  from its main city, or a city you'd expect to see doesn't trigger at
+  all, that's the curated list's boundaries — let me know and I can adjust
+  either the include/exclude list or a city's circle size.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
@@ -678,13 +756,16 @@ avoids that.
   a backup to Starlink.
 - Trip sharing has no login for viewers by design (that's what makes it
   zero-setup for family) — anyone who has the current 6-digit passcode (or
-  the link, which has that same passcode built into it) can watch that trip
-  while it's active. Passcodes/links are random and change every time you
-  start sharing, and only your own phone (tied to a private key Firebase
-  generates the first time you use this feature) can ever post
-  location/photos/videos/comments as you, but treat the link or passcode
-  itself like a house key: share it only with people you trust, and tap
-  **Stop Sharing** when you don't want it usable anymore.
+  the link, which has that same passcode built into it) can watch that trip.
+  Passcodes/links are random and change every time you start sharing, and
+  only your own phone (tied to a private key Firebase generates the first
+  time you use this feature) can ever post location/photos/videos/comments
+  as you, but treat the link or passcode itself like a house key: share it
+  only with people you trust. **Stop Sharing only turns off live position
+  updates** — it does not revoke the passcode/link. Anyone who has it can
+  still open that trip's route, photos, and comments at any time afterward
+  (this is intentional — see **My past trip logs** — but it means Stop
+  Sharing isn't a way to lock someone out who already has the passcode).
 - Voice reply depends on your browser's built-in speech recognition, which
   is inconsistent across browsers — reliable on Chrome, historically
   spottier on Safari (and can require an actual network connection to
