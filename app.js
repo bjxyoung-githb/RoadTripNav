@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.18.3';
+const APP_VERSION = 'v2026.09.18.5';
 
 /* ============================== UTILITIES ============================== */
 
@@ -292,6 +292,12 @@ const state = {
   // "we don't know yet" — hence the separate `initialized` flag to mark
   // the one-time startup fix.
   usCityTrack: { initialized: false, confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
+  // Same idea again, for the automatic "you crossed into a new time zone"
+  // alert — see checkUSTimezoneCrossing() below. `confirmed` holds the
+  // whole zone object (not just a name) once known, since the alert needs
+  // to look up both the old and new zone's real current UTC offset at the
+  // moment of crossing.
+  tzTrack: { confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
@@ -1485,6 +1491,7 @@ async function onLocationUpdate() {
 
   checkUSStateCrossing(cur);
   checkUSCityCrossing(cur);
+  checkUSTimezoneCrossing(cur);
 
   const { idx, dist } = findNearestIndex(cur.lat, cur.lon);
   nearestIndexCache = idx;
@@ -1663,6 +1670,8 @@ function initMap() {
   state.map.on('click', (e) => { handleMapTapForEta(e.latlng.lat, e.latlng.lng); });
 
   addMapHelpControl(state.map, 'map-driver');
+
+  drawTimezoneLines(state.map);
 }
 
 // A small on-map button that appears once the map has been manually panned
@@ -1938,6 +1947,7 @@ async function startSharing() {
     await db.collection('trips').doc(pin).set({
       ownerUid: uid,
       destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
+      legLabel: state.currentLegLabel || null,
       startedAt: firebase.firestore.FieldValue.serverTimestamp(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       active: true,
@@ -1989,6 +1999,32 @@ async function stopSharing() {
   renderSharePanel();
   renderViewerMessages(); // hides the messages panel now that sharing's off
   toast('Sharing stopped.', 3000);
+}
+
+// Lets the traveler name (or rename) this trip/leg after sharing has
+// already started — e.g. it was left blank at "Calculate Route" time, or
+// plans changed mid-drive. Updates the same three places a label typed at
+// Calculate Route time would end up: the live Firestore doc (so anyone
+// watching sees the new name right away, via renderWatchTrip()), this
+// device's own active-leg snapshot (persistActiveLeg(), so tomorrow's
+// "Resume Trip" offer keeps it), and "My past trip logs" (renameOwnTrip(),
+// so that list matches too) — all from one place, so the three can't drift
+// out of sync with each other the way a purely local rename would.
+function updateTripLabel() {
+  const sh = state.share;
+  if (!sh.active) return;
+  const name = window.prompt('Name for this trip (shown to you and to anyone watching):', state.currentLegLabel || '');
+  if (name === null) return; // cancelled
+  const label = name.trim();
+  state.currentLegLabel = label || null;
+  persistActiveLeg();
+  renameOwnTrip(sh.pin, label);
+  state.fb.db.collection('trips').doc(sh.pin).set(
+    { legLabel: state.currentLegLabel, updatedAt: firebase.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  ).catch(() => { /* best effort; a stale name for watchers is a minor cosmetic miss */ });
+  renderSharePanel();
+  toast(label ? 'Trip name updated.' : 'Trip name cleared.', 3000);
 }
 
 // Marks the trip as "taking a break" for anyone watching — see
@@ -2742,6 +2778,195 @@ function checkUSCityCrossing(loc) {
   }
 }
 
+/* ============================== US TIME ZONE CROSSINGS ============================== */
+// Draws the boundary lines between the practical US time zones on both the
+// driver's own map and every watcher's map (see drawTimezoneLines(), called
+// once from initMap() and initWatchMap() — the lines are static, so unlike
+// the route line they're only ever drawn once, never redrawn), and alerts
+// the driver when GPS confirms they've actually moved into a different
+// zone. Boundary polygons live in assets/us-timezones-data.js
+// (window.US_TIMEZONES_DATA), loaded before this file, same pattern as
+// assets/us-states-data.js/us-cities-data.js.
+//
+// Unlike the state/city crossing trivia above, this alert is useful
+// information for the driver whether or not they happen to be sharing a
+// trip right now (their clock is about to change either way), so — unlike
+// addStateCrossingComment()/addCityCrossingComment() — the toast + spoken
+// alert below fire regardless of state.share.active. Only the Firestore
+// trip-log entry (so watchers see it too) is naturally limited to an
+// active share, same as everything else in the trip log.
+const US_TZ_CROSS_MILES = 1; // same confirm buffer as state crossings — see checkUSStateCrossing()
+
+// Bounding-box reject first (cheap), same pattern as findStateForPoint().
+function findTimezoneForPoint(lat, lon) {
+  const list = window.US_TIMEZONES_DATA;
+  if (!list) return null;
+  for (const tz of list) {
+    const b = tz.bbox;
+    if (lon < b[0] || lon > b[2] || lat < b[1] || lat > b[3]) continue;
+    if (pointInPolygons(lon, lat, tz.polygons)) return tz;
+  }
+  return null;
+}
+
+// The real current UTC offset (in minutes, e.g. -420 for GMT-7) for a given
+// IANA zone id, computed live via the browser's own Intl support rather
+// than tracked by this app — so it's automatically correct on both sides
+// of a Daylight Saving switchover with no DST date-math of our own to get
+// wrong. This is what lets the alert below tell the difference between an
+// official zone-line crossing that actually changes the clock right now
+// and one that doesn't (Arizona's "Mountain (Arizona)" zone keeps the same
+// offset as Pacific for the part of the year Pacific observes DST).
+function currentUtcOffsetMinutes(ianaId) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: ianaId, timeZoneName: 'shortOffset' }).formatToParts(new Date());
+    const tzPart = parts.find((p) => p.type === 'timeZoneName');
+    const m = tzPart && tzPart.value.match(/GMT([+-])(\d+)(?::(\d+))?/);
+    if (!m) return null;
+    const sign = m[1] === '-' ? -1 : 1;
+    const hours = parseInt(m[2], 10);
+    const mins = m[3] ? parseInt(m[3], 10) : 0;
+    return sign * (hours * 60 + mins);
+  } catch (e) {
+    return null; // unrecognized ianaId, or a browser without Intl timeZoneName support
+  }
+}
+
+function formatUtcOffset(mins) {
+  if (mins === null || mins === undefined) return 'an unknown offset';
+  const sign = mins < 0 ? '−' : '+';
+  const abs = Math.abs(mins);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  return `UTC${sign}${h}${m ? ':' + String(m).padStart(2, '0') : ''}`;
+}
+
+// Builds the alert text shown in the toast and spoken aloud, comparing the
+// *actual* current offset of the old and new zone rather than just their
+// names — see currentUtcOffsetMinutes() above for why that matters.
+function timezoneCrossingText(fromTz, toTz) {
+  const fromOffset = fromTz ? currentUtcOffsetMinutes(fromTz.ianaId) : null;
+  const toOffset = currentUtcOffsetMinutes(toTz.ianaId);
+  const dstNote = toTz.note ? ` ${toTz.note}` : '';
+  if (fromOffset !== null && toOffset !== null && fromOffset === toOffset) {
+    return `Crossed into the ${toTz.name} time zone — but the clock stays the same for now, both zones are ${formatUtcOffset(toOffset)} right now.${dstNote}`;
+  }
+  if (fromOffset !== null && toOffset !== null) {
+    const diffHours = (toOffset - fromOffset) / 60;
+    const dir = diffHours > 0 ? 'ahead' : 'behind';
+    const hoursLabel = Math.abs(diffHours) === 1 ? '1 hour' : `${Math.abs(diffHours)} hours`;
+    return `Crossed into the ${toTz.name} time zone (${formatUtcOffset(toOffset)}) — clocks here are ${hoursLabel} ${dir}.${dstNote}`;
+  }
+  return `Crossed into the ${toTz.name} time zone.${dstNote}`;
+}
+
+// Same defer-and-retry pattern as announceStateCrossing()/announceCityCrossing()
+// — never talk over an in-progress turn instruction.
+function announceTimezoneCrossing(text, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 6;
+  if (!voiceSupported() || !state.settings.voiceEnabled) return;
+  if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+    if (attemptsLeft > 0) setTimeout(() => announceTimezoneCrossing(text, attemptsLeft - 1), 1500);
+    return;
+  }
+  speak(text);
+}
+
+async function addTimezoneCrossingComment(toTz, text, fromOffset, toOffset) {
+  const sh = state.share;
+  if (!sh.active) return; // nothing to attach it to — the toast/speech above already happened either way
+  const loc = state.loc;
+  try {
+    await state.fb.db.collection('trips').doc(sh.pin).collection('events').add({
+      type: 'timezone',
+      tzName: toTz.name,
+      tzAbbr: toTz.abbr,
+      ianaId: toTz.ianaId,
+      utcOffsetMinutes: toOffset,
+      clockChanged: fromOffset !== null && toOffset !== null && fromOffset !== toOffset,
+      text,
+      lat: loc ? loc.lat : null, lon: loc ? loc.lon : null,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    // Best-effort, same as addStateCrossingComment().
+  }
+}
+
+// Called from onLocationUpdate() alongside checkUSStateCrossing()/
+// checkUSCityCrossing(). Same confirm-buffer pattern as the state check:
+// requires US_TZ_CROSS_MILES of actual travel confirmed inside the new
+// zone before alerting, so GPS jitter right at a zone line (which, unlike
+// state lines, sometimes runs right down the middle of a small town)
+// doesn't fire a false/flapping alert.
+function checkUSTimezoneCrossing(loc) {
+  if (!window.US_TIMEZONES_DATA || !loc) return;
+  const track = state.tzTrack;
+  const detected = findTimezoneForPoint(loc.lat, loc.lon);
+  if (!detected) return; // between polygons (simplification gap) or no fix yet — leave tracking as-is
+
+  if (track.confirmed === null) {
+    // First zone we can determine this page session — the one you're
+    // starting in. Adopt it silently; you already know what time it is.
+    track.confirmed = detected;
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (detected.name === track.confirmed.name) {
+    track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    return;
+  }
+  if (!track.candidate || track.candidate.name !== detected.name) {
+    track.candidate = detected;
+    track.candidateMiles = 0;
+  } else if (track.lastLoc) {
+    track.candidateMiles += haversineMiles(track.lastLoc.lat, track.lastLoc.lon, loc.lat, loc.lon);
+  }
+  track.lastLoc = loc;
+  if (track.candidateMiles >= US_TZ_CROSS_MILES) {
+    const fromTz = track.confirmed;
+    track.confirmed = detected;
+    track.candidate = null;
+    track.candidateMiles = 0;
+    const fromOffset = fromTz ? currentUtcOffsetMinutes(fromTz.ianaId) : null;
+    const toOffset = currentUtcOffsetMinutes(detected.ianaId);
+    const text = timezoneCrossingText(fromTz, detected);
+    toast(text, 7000);
+    announceTimezoneCrossing(text);
+    addTimezoneCrossingComment(detected, text, fromOffset, toOffset);
+  }
+}
+
+// Draws every zone's boundary as a static, non-interactive dashed outline —
+// called once each from initMap() (driver) and initWatchMap() (viewer), and
+// never redrawn afterward since these lines never move. Distinct dash
+// style from the solid blue route line so the two are never confused, and
+// non-interactive/unfilled so they never get in the way of tapping the map
+// (see handleMapTapForEta()) or seeing the satellite/street imagery
+// underneath. A single permanent label near the middle of each zone's
+// largest piece names it, so both the driver and a watcher can tell which
+// zone is which side of a given line without needing a separate legend.
+function drawTimezoneLines(map) {
+  const zones = window.US_TIMEZONES_DATA;
+  if (!zones || !map) return;
+  zones.forEach((tz) => {
+    let largestPoly = null, largestPts = -1;
+    tz.polygons.forEach((part) => {
+      const latlngs = part.map((ring) => ring.map(([lon, lat]) => [lat, lon]));
+      const poly = L.polygon(latlngs, {
+        color: tz.color, weight: 2, opacity: 0.6, dashArray: '7 6',
+        fill: false, interactive: false,
+      }).addTo(map);
+      if (part[0].length > largestPts) { largestPts = part[0].length; largestPoly = poly; }
+    });
+    if (largestPoly) {
+      largestPoly.bindTooltip(`${tz.abbr} — ${tz.name}${tz.observesDST ? '' : ' (no DST)'}`, {
+        permanent: true, direction: 'center', className: 'tz-tooltip',
+      });
+    }
+  });
+}
+
 // Builds the "📍 lat, lon · temp · elevation" bit shown next to the
 // timestamp on every comment/photo/video — whatever was known at the
 // moment it was added (see addPhoto()/addVideoLink()/addComment()).
@@ -2785,6 +3010,11 @@ function renderEventItem(ev) {
       <div class="item-sub">${escapeHtml(cityEventFactsLine(ev))}</div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
+  if (ev.type === 'timezone') {
+    return `<div class="event-item"><div class="event-icon tz-event-icon">🕐</div><div>
+      <div class="item-main">🕐 ${escapeHtml(ev.text || `Just entered the ${ev.tzName || ''} time zone`)} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
+      <div class="item-sub">${whenLine}</div></div></div>`;
+  }
   if (ev.type === 'video') {
     const thumb = ev.driveFileId
       ? `<img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" class="event-thumb" alt="Video thumbnail" loading="lazy" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'event-icon',textContent:'🎥'}))">`
@@ -2809,7 +3039,7 @@ function renderEventItem(ev) {
 }
 
 function makeEventMarker(ev) {
-  const iconEmoji = ev.type === 'comment' ? '💬' : ev.type === 'state' ? '🤖' : ev.type === 'city' ? '🏙️' : ev.type === 'video' ? '🎥' : '📷';
+  const iconEmoji = ev.type === 'comment' ? '💬' : ev.type === 'state' ? '🤖' : ev.type === 'city' ? '🏙️' : ev.type === 'timezone' ? '🕐' : ev.type === 'video' ? '🎥' : '📷';
   const icon = ev.type === 'state'
     ? L.divIcon({
         className: 'event-marker',
@@ -2820,6 +3050,12 @@ function makeEventMarker(ev) {
     ? L.divIcon({
         className: 'event-marker',
         html: `<div class="event-marker-icon city-marker-icon">${iconEmoji}</div>`,
+        iconSize: [30, 30], iconAnchor: [15, 27],
+      })
+    : ev.type === 'timezone'
+    ? L.divIcon({
+        className: 'event-marker',
+        html: `<div class="event-marker-icon tz-marker-icon">${iconEmoji}</div>`,
         iconSize: [30, 30], iconAnchor: [15, 27],
       })
     : L.divIcon({
@@ -2839,6 +3075,8 @@ function makeEventMarker(ev) {
     popupHtml = `<b>🤖 Just entered ${escapeHtml(ev.stateName || '')}</b> <span class="muted" style="font-size:11px;">(system comment)</span><br>${escapeHtml(stateEventFactsLine(ev))}${metaLine}`;
   } else if (ev.type === 'city') {
     popupHtml = `<b>🏙️ Just entered ${escapeHtml(ev.cityName || '')}</b> <span class="muted" style="font-size:11px;">(system comment)</span><br>${escapeHtml(cityEventFactsLine(ev))}${metaLine}`;
+  } else if (ev.type === 'timezone') {
+    popupHtml = `<b>🕐 ${escapeHtml(ev.text || `Just entered the ${ev.tzName || ''} time zone`)}</b> <span class="muted" style="font-size:11px;">(system comment)</span>${metaLine}`;
   } else if (ev.type === 'video') {
     const thumb = ev.driveFileId
       ? `<br><img src="https://drive.google.com/thumbnail?id=${encodeURIComponent(ev.driveFileId)}&sz=w200" style="max-width:200px;max-height:200px;" onerror="this.remove()">`
@@ -2986,7 +3224,14 @@ function renderSharePanel() {
     ? sh.events.map(renderEventItem).join('')
     : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
   const shareUrl = buildShareUrl(sh.pin);
+  const tripTitleHtml = state.currentLegLabel
+    ? escapeHtml(state.currentLegLabel)
+    : '<span class="muted">Untitled trip — tap ✏️ to name it</span>';
   panel.innerHTML = `
+    <div class="trip-title-row">
+      <div class="trip-title-text">${tripTitleHtml}</div>
+      <button id="editTripLabelBtn" class="ghost-btn small" title="Rename this trip">✏️</button>
+    </div>
     <div class="share-pin-box">
       <div class="share-pin-lbl">Link to watch this trip — just tap it, nothing to type</div>
       <input id="shareLinkInput" class="share-link-input" type="text" readonly value="${escapeHtml(shareUrl)}">
@@ -3024,6 +3269,7 @@ function renderSharePanel() {
     </div>
     <div class="event-list">${eventsHtml}</div>`;
 
+  document.getElementById('editTripLabelBtn').onclick = updateTripLabel;
   document.getElementById('shareLinkInput').onclick = (e) => e.target.select();
   document.getElementById('shareLinkBtn').onclick = async () => {
     // On a phone, this opens the normal share sheet (Messages, email,
@@ -3539,6 +3785,7 @@ function initWatchMap() {
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
   state.watch.map = map;
+  drawTimezoneLines(map);
   state.watch.fullscreen = false;
   addFullscreenToggleControl(map, () => state.watch.fullscreen, toggleWatchFullscreen);
 
@@ -3649,6 +3896,17 @@ function renderWatchTrip() {
   const trip = state.watch.trip;
   if (!trip) return;
   const map = state.watch.map;
+
+  // The traveler's chosen name for this trip/leg (optional — see "Label
+  // this leg" on their setup screen, and the ✏️ rename button on their
+  // Share & Trip Log panel). Hidden entirely rather than showing a
+  // placeholder when they haven't named it, so an unnamed trip just looks
+  // the way this screen always used to look.
+  const titleEl = document.getElementById('watchTripTitle');
+  if (titleEl) {
+    if (trip.legLabel) { titleEl.textContent = trip.legLabel; titleEl.classList.remove('hidden'); }
+    else { titleEl.textContent = ''; titleEl.classList.add('hidden'); }
+  }
 
   // Elevation is already sitting on the trip doc (the driver computes it
   // for free off their own route data — see currentElevationFt()), so this
@@ -4530,6 +4788,12 @@ const HELP_TOPICS = {
         switches based on your speed).</li>
         <li><b>⛶ Full Map</b> (top-left) expands the map to fill the
         screen.</li>
+        <li>Dashed colored lines mark the boundaries between US time zones,
+        each labeled — Eastern, Central, Mountain, Mountain (Arizona,
+        which doesn't observe Daylight Saving Time), and Pacific. Crossing
+        one pops up an alert and reads it aloud, telling you whether your
+        clock actually needs to change right now (it sometimes doesn't,
+        near Arizona, depending on the time of year).</li>
       </ul>`,
   },
   'reroute-offer': {
@@ -4616,6 +4880,12 @@ const HELP_TOPICS = {
     title: 'Share & Trip Log',
     html: `
       <ul>
+        <li>The trip's name sits at the top of this panel, with a
+        <b>✏️</b> button next to it — tap it any time (before or after you
+        start sharing) to set or change what family sees as the trip's
+        title, on your screen and theirs. Leave it blank and it just shows
+        as "Untitled trip" on your side; watchers simply won't see a title
+        at all until you set one.</li>
         <li>Tap <b>Start Sharing This Leg</b> to get a one-tap link (plus a
         6-digit passcode as backup) for family. <b>📤 Share Link</b> sends it
         through your phone's own share sheet; <b>📋 Copy</b> copies it by
@@ -4640,6 +4910,13 @@ const HELP_TOPICS = {
         near Phoenix, Henderson near Las Vegas, and so on) don't get their
         own separate announcement — only the main city does, even if your
         route runs straight through the suburb.</li>
+        <li>🕐 Crossing into a new US time zone pops up an on-screen alert
+        and speaks it aloud too — including whether your clock actually
+        needs to change right now, since Arizona doesn't observe Daylight
+        Saving Time and so sometimes matches Pacific and sometimes matches
+        Mountain depending on the season. This one alerts you even when
+        you're not sharing a leg; it's only added to the trip log (for
+        watchers to see) while you are.</li>
         <li>Stopping overnight without ending the leg? Tap <b>⏸ Pause for
         the Night</b> so family sees a friendly "taking a break" message
         instead of a stale-data warning; it clears itself once you're
@@ -4687,9 +4964,12 @@ const HELP_TOPICS = {
     title: 'Watching live',
     html: `
       <ul>
-        <li>The status line at top tells you if things are current, if the
-        traveler is taking a break overnight (⏸ paused), or if updates have
-        gone stale.</li>
+        <li>If the traveler has named this trip, that name shows in bold at
+        the very top of this screen — they can change it any time, and
+        it'll update here the next time this screen refreshes.</li>
+        <li>The status line below that tells you if things are current, if
+        the traveler is taking a break overnight (⏸ paused), or if updates
+        have gone stale.</li>
         <li>Below that: a trip progress bar (percent of the total distance
         driven so far), then current weather and elevation at their
         position, then the live map — their position updates as an arrow
@@ -4731,6 +5011,9 @@ const HELP_TOPICS = {
         of remaining drive time, using the same shared route data as the
         tap-for-ETA feature above — most accurate while they're on or near
         their planned route.</li>
+        <li>Dashed colored lines mark the boundaries between US time zones,
+        each labeled, so you can see at a glance which zone the traveler is
+        currently in and what's coming up.</li>
       </ul>`,
   },
   'watch-mountains': {
