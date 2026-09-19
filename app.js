@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.19.1';
+const APP_VERSION = 'v2026.09.19.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1314,11 +1314,11 @@ function closestPointOnSegment(lat, lon, lat1, lon1, lat2, lon2) {
 // projected point is nearer to) so the existing cumDist/cumDur/elevation
 // lookups elsewhere, which all index by vertex, keep working unchanged —
 // only the off-route distance itself was wrong before.
-function findNearestIndex(lat, lon) {
-  const { coords } = state.route;
-  if (coords.length < 2) return { idx: 0, dist: coords.length ? haversineMiles(lat, lon, coords[0][1], coords[0][0]) : Infinity };
-  let best = 0, bestD = Infinity;
-  for (let i = 0; i < coords.length - 1; i++) {
+// Shared inner loop: nearest point on any segment between coords[startI]
+// and coords[endI] (inclusive of the segment starting at endI - 1).
+function nearestIndexInRange(coords, lat, lon, startI, endI) {
+  let best = startI, bestD = Infinity;
+  for (let i = startI; i < endI; i++) {
     const [lon1, lat1] = coords[i];
     const [lon2, lat2] = coords[i + 1];
     const proj = closestPointOnSegment(lat, lon, lat1, lon1, lat2, lon2);
@@ -1326,6 +1326,46 @@ function findNearestIndex(lat, lon) {
     if (d < bestD) { bestD = d; best = proj.t < 0.5 ? i : i + 1; }
   }
   return { idx: best, dist: bestD };
+}
+
+// How far around the last known position to search before trusting the
+// result — see the windowing comment below.
+const NEAREST_WINDOW_BACK_MILES = 0.5;
+const NEAREST_WINDOW_FORWARD_MILES = 5;
+const NEAREST_WINDOW_TRUST_MILES = 0.25;
+
+function findNearestIndex(lat, lon) {
+  const { coords, cumDist } = state.route;
+  if (coords.length < 2) return { idx: 0, dist: coords.length ? haversineMiles(lat, lon, coords[0][1], coords[0][0]) : Infinity };
+
+  // Search only a window around where the driver was last known to be,
+  // rather than the whole route, before falling back to a full search.
+  // This matters most at complex highway interchanges: an off-ramp can run
+  // for a stretch just a few dozen meters from the mainline it's splitting
+  // from, which a plain nearest-point-on-the-whole-route search has no way
+  // to tell apart from the correct, further-along point on the ramp/
+  // mainline actually being driven — it can snap back onto an earlier part
+  // of the route that just happens to be physically closer, which then
+  // reports the WRONG upcoming turn instruction (an earlier "keep right"
+  // instead of the real next turn) even while the distance countdown to it
+  // keeps ticking down normally, since both points are moving the same
+  // direction. Restricting the search to a window keeps that earlier,
+  // wrong-but-nearby geometry out of contention entirely. The window is
+  // widened well past normal one-fix-to-the-next travel distance (even at
+  // highway speed) so ordinary driving, and a stretch of poor/lost GPS
+  // signal, never falsely triggers the full-search fallback below.
+  const traveled = cumDist[nearestIndexCache] || 0;
+  const backIdx = coordAtDistance(Math.max(0, traveled - NEAREST_WINDOW_BACK_MILES)).idx;
+  const fwdIdx = coordAtDistance(traveled + NEAREST_WINDOW_FORWARD_MILES).idx;
+  const windowed = nearestIndexInRange(coords, lat, lon, backIdx, Math.max(backIdx + 1, fwdIdx));
+  if (windowed.dist <= NEAREST_WINDOW_TRUST_MILES) return windowed;
+
+  // Nothing close enough nearby to trust — the very first fix of a leg
+  // (nearestIndexCache still 0, so the window above already covers the
+  // route's start anyway), or the driver is genuinely well off this
+  // window's stretch of the route (a real wrong turn, well past the
+  // windowed search's reach). Fall back to checking the entire route.
+  return nearestIndexInRange(coords, lat, lon, 0, coords.length - 1);
 }
 
 // Reads elevation (in feet) at the driver's current position on the route,
@@ -1399,6 +1439,12 @@ async function performReroute(curLat, curLon) {
     state.route = newRoute;
     state.announced = new Set();
     state.arrivalAnnounced = false;
+    // A reroute is a brand-new route array starting from right here, so
+    // the "nearest point" search needs to start over from its beginning
+    // too — see findNearestIndex()'s windowed search, which otherwise
+    // would keep searching near whatever index was current on the OLD
+    // route, a stale and likely out-of-range/wrong position on the new one.
+    nearestIndexCache = 0;
     drawRoute(true);
     persistActiveLeg(); // the route just changed — keep the overnight-resume snapshot current
     if (state.share.active) {
@@ -1573,14 +1619,45 @@ async function onLocationUpdate() {
   maybePushShareLocation();
 }
 
+// Remembers what was last drawn so renderSteps() below can tell "nothing
+// actually changed" (called again for the same current step, which is most
+// GPS updates — a turn is usually minutes away, not seconds) from "the
+// current step just advanced" or "this is a new route's step list
+// entirely." Only those latter two cases touch the DOM or auto-scroll —
+// see the comment on the scrollIntoView call below for why that matters.
+let lastRenderedSteps = null;
+let lastRenderedStepIdx = null;
+
 function renderSteps(currentIdx) {
   const panel = document.getElementById('stepsPanel');
   const steps = state.route.steps;
-  panel.innerHTML = steps.map((s, i) => `
-    <div class="step-item ${i === currentIdx ? 'current' : ''}">
-      ${s.instruction}
-      <div class="step-dist">${fmtMiles(s.distance)}${s.name && s.name !== '-' ? ' on ' + s.name : ''}</div>
-    </div>`).join('');
+  const isNewStepsList = steps !== lastRenderedSteps;
+  if (!isNewStepsList && currentIdx === lastRenderedStepIdx) return; // nothing to do — see comment above
+
+  if (isNewStepsList) {
+    panel.innerHTML = steps.map((s, i) => `
+      <div class="step-item ${i === currentIdx ? 'current' : ''}">
+        ${s.instruction}
+        <div class="step-dist">${fmtMiles(s.distance)}${s.name && s.name !== '-' ? ' on ' + s.name : ''}</div>
+      </div>`).join('');
+  } else {
+    // Same list, just a different current step — flip the highlight
+    // without rebuilding the whole panel, so nothing here disturbs
+    // wherever the reader has scrolled to.
+    const items = panel.querySelectorAll('.step-item');
+    if (items[lastRenderedStepIdx]) items[lastRenderedStepIdx].classList.remove('current');
+    if (items[currentIdx]) items[currentIdx].classList.add('current');
+  }
+  lastRenderedSteps = steps;
+  lastRenderedStepIdx = currentIdx;
+
+  // Auto-scroll only happens here — when the current step actually changed
+  // (a real turn was just reached) or a brand new route just loaded — never
+  // on an unrelated GPS update for a step that hasn't moved. Previously
+  // this ran on every single location update regardless, which fought
+  // anyone trying to scroll down to read ahead: the list would jump back
+  // to the current turn every few seconds even though nothing had actually
+  // changed yet.
   const activeEl = panel.querySelectorAll('.step-item')[currentIdx];
   if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
 }
@@ -4261,6 +4338,7 @@ function wireSetupScreen() {
       route.destForReroute = dest;
       state.route = route;
       state.currentStepIndex = 0;
+      nearestIndexCache = 0; // fresh route array — see performReroute()'s comment
       state.lastRerouteAt = 0;
       state.rerouteOfferState = 'none';
       state.rerouteOffer = null;
@@ -4568,6 +4646,7 @@ async function resumeActiveLeg(snap) {
   state.route = snap.route;
   state.currentLegLabel = snap.legLabel || null;
   state.currentStepIndex = 0;
+  nearestIndexCache = 0; // fresh route array — see performReroute()'s comment
   state.lastRerouteAt = 0;
   state.rerouteOfferState = 'none';
   state.rerouteOffer = null;
