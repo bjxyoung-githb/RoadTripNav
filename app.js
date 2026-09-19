@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.19.2';
+const APP_VERSION = 'v2026.09.19.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -2406,7 +2406,7 @@ async function sendDriverReply(toUid, toName, text) {
     speak(`Reply sent to ${toName}.`); // audible confirmation — no need to glance at the screen
     toast(`Reply sent to ${toName}: "${text}"`, 5000);
   } catch (e) {
-    toast("Couldn't send reply: " + e.message, 6000);
+    toast("Couldn't send reply: " + friendlySendErrorMessage(e), 6000);
   }
 }
 
@@ -3554,6 +3554,29 @@ function wireViewerMessageBox() {
   msgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendViewerMessage(); });
 }
 
+// Translates a Firestore write failure into something a family member
+// (not a developer) can actually act on. The one case worth calling out
+// specifically is 'permission-denied': for the messages/replies rules in
+// this app, that always means the trip the write was aimed at isn't
+// currently "active" (the security rules re-check that live, server-side,
+// at write time) — the same condition the pre-checks above already try to
+// catch client-side, using whatever copy of the trip doc this device last
+// received. Those two can disagree for a moment: if this device's own
+// connection hiccups right as the trip's status changes (the traveler
+// ends that leg, or starts a new one with a fresh link), the client-side
+// check can still be looking at the old "active" state and let the
+// attempt through, only for the server to correctly reject it a moment
+// later with a raw "Missing or insufficient permissions" — which reads to
+// anyone non-technical like a mysterious authorization failure, not "ask
+// for a fresh link." Every other error (a genuine dropped connection,
+// something unexpected) still shows its own real message.
+function friendlySendErrorMessage(e) {
+  if (e && e.code === 'permission-denied') {
+    return "This trip isn't active right now — ask for a fresh link.";
+  }
+  return e && e.message ? e.message : 'Unknown error.';
+}
+
 async function sendViewerMessage() {
   const nameInput = document.getElementById('watchNameInput');
   const msgInput = document.getElementById('watchMessageInput');
@@ -3585,7 +3608,7 @@ async function sendViewerMessage() {
     msgInput.value = '';
     toast('Message sent.', 2500);
   } catch (e) {
-    toast("Couldn't send: " + e.message, 5000);
+    toast("Couldn't send: " + friendlySendErrorMessage(e), 5000);
   } finally {
     sendBtn.disabled = false;
   }
