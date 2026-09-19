@@ -521,6 +521,35 @@ avoids that.
   when the upcoming turn was actually a left, because that was the
   direction of the turn you'd already made. Now the instruction and the
   distance both point at the same upcoming turn.
+- **Turn-by-turn announced a "keep right" that had already passed instead
+  of the actual upcoming turn, at a highway interchange, even though the
+  distance countdown looked right and the full turn-by-turn list further
+  down had the correct turn listed** — fixed in v2026.09.19.2, a different
+  root cause than the one above. Every GPS fix finds "the nearest point on
+  the route" by checking the whole route's geometry — fine almost
+  everywhere, but at a complex interchange, an off-ramp or loop can pass
+  back within a few dozen feet of an earlier stretch of the same highway,
+  and that earlier point can measure as geometrically closer than the
+  correct point you're actually driving toward. When that happened, the
+  app kept reporting an already-completed maneuver as if it were still
+  upcoming, while the distance kept counting down normally (both points
+  were moving forward together, just the wrong one was being announced) —
+  which is exactly backward from a genuinely useful warning and can cause
+  a real missed turn. It now only searches for the nearest point in a
+  window around wherever it last confirmed you were, rather than the whole
+  route, so an earlier, coincidentally-nearby stretch of road can't win out
+  over the correct, further-along point you're actually on; it still falls
+  back to a full-route search if nothing in that window is close enough
+  (the first GPS fix of a leg, or after a real wrong turn takes you well
+  off the route).
+- **The "Full turn-by-turn" list fought attempts to scroll down and read
+  ahead** — fixed in v2026.09.19.2. It used to re-scroll itself back to the
+  current turn on every single GPS update (every few seconds), whether or
+  not the current turn had actually changed, which felt like it was
+  constantly yanking you back while you tried to look further down the
+  road. It now only rebuilds/re-scrolls when the current turn genuinely
+  advances (or a new route loads) — scrolling around in between is never
+  interrupted.
 - **Voice guidance stopped working, even though it's worked before and
   "Enable Voice Guidance" is checked** — as of v2026.09.17.2, tapping
   Enable Voice Guidance (or turning the 🔊 toggle back on) now speaks an
