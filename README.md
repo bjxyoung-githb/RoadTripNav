@@ -765,6 +765,13 @@ avoids that.
   is simply an old/expired link or passcode being used — check that whoever
   hit this was using the current one shown on your own Share & Trip Log
   panel, not one from an earlier leg.
+- **The blue route line covers up road names/numbers on the map** — fixed in
+  v2026.09.19.4. The route line is drawn on top of the map so it's always
+  visible, which meant it could fully blot out a street name or highway
+  shield printed right underneath it wherever the route runs along that
+  road. It's now drawn a little thinner and semi-transparent (both on your
+  own map and every watcher's), so labels underneath show through while the
+  line itself is still clearly visible.
 - **A message showed up in the panel but wasn't read aloud** — either voice
   guidance itself is off (check the 🔊/🔇 icon in the top bar), or it was
   still busy reading an actual turn instruction when the message arrived
