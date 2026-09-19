@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.19.3';
+const APP_VERSION = 'v2026.09.19.4';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1885,7 +1885,10 @@ function updateBaseLayerForSpeed(speedMph) {
 function drawRoute(isReroute) {
   if (state.routeLine) state.map.removeLayer(state.routeLine);
   const latlngs = state.route.coords.map((c) => [c[1], c[0]]);
-  state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(state.map);
+  // weight/opacity kept low enough that road names and highway shields
+  // printed on the map underneath aren't fully blotted out by the line
+  // itself, especially where the route runs right along a labeled road.
+  state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 4, opacity: 0.65 }).addTo(state.map);
 
   // The route geometry's last point is wherever the road network snapped
   // to (the nearest point ORS can actually drive to) — this can land
@@ -4041,7 +4044,9 @@ function renderWatchTrip() {
       const isFirstDraw = state.watch.routeCoordsVersion === undefined;
       if (state.watch.routeLine) { map.removeLayer(state.watch.routeLine); }
       const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
-      state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5 }).addTo(map);
+      // Same reduced weight/opacity as the driver's map (drawRoute()) so
+      // road names and highway shields underneath the line stay legible.
+      state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 4, opacity: 0.65 }).addTo(map);
       // Only snap/zoom the viewer's map on the very first draw. A reroute
       // sends a new route that only spans from the traveler's current spot
       // onward, so re-fitting bounds on every redraw would yank a watcher's
