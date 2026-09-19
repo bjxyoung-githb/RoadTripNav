@@ -747,6 +747,24 @@ avoids that.
     from section 7b with that condition included. The fix either way: make
     sure whoever's testing is using the passcode/link currently showing on
     your own Share & Trip Log panel, not one from an earlier test.
+- **A family member got told they "didn't have the authority" (or a raw
+  "Missing or insufficient permissions" error) trying to send a message,
+  even though the trip looked active** — fixed in v2026.09.19.3. There's
+  always been a friendly pre-check that catches a stopped/stale trip before
+  it ever reaches Firestore (see the "This trip isn't active right now" bullet
+  above), but it relies on this device's own last-received copy of the trip's
+  status — if that phone's connection hiccupped for a moment right as the
+  trip's status changed (the traveler ended that leg, or started a fresh one
+  with a new link, right around when the message was being sent), the
+  pre-check could still see the old "active" state, let the attempt through,
+  and then get the confusing raw permissions error back from the server
+  instead of a plain-English one. The app now also catches that specific
+  error directly and shows the same friendly "This trip isn't active right
+  now — ask for a fresh link" message either way, so this can't slip through
+  as a mysterious authorization failure again. The most common actual cause
+  is simply an old/expired link or passcode being used — check that whoever
+  hit this was using the current one shown on your own Share & Trip Log
+  panel, not one from an earlier leg.
 - **A message showed up in the panel but wasn't read aloud** — either voice
   guidance itself is off (check the 🔊/🔇 icon in the top bar), or it was
   still busy reading an actual turn instruction when the message arrived
