@@ -765,13 +765,26 @@ avoids that.
   is simply an old/expired link or passcode being used — check that whoever
   hit this was using the current one shown on your own Share & Trip Log
   panel, not one from an earlier leg.
-- **The blue route line covers up road names/numbers on the map** — fixed in
-  v2026.09.19.4. The route line is drawn on top of the map so it's always
-  visible, which meant it could fully blot out a street name or highway
-  shield printed right underneath it wherever the route runs along that
-  road. It's now drawn a little thinner and semi-transparent (both on your
-  own map and every watcher's), so labels underneath show through while the
-  line itself is still clearly visible.
+- **The blue route line covers up road names/numbers on the map** — a first
+  pass in v2026.09.19.4 made the line thinner and semi-transparent, which
+  helped some but still left a highway shield sitting right on the route
+  hard to read (a see-through blue wash over it isn't the same as it being
+  uncovered). v2026.09.19.6 fixes the actual cause in satellite mode: the
+  route line was always drawn in the same
+  layer Leaflet uses for anything drawn "on top" of the map, above every
+  map tile no matter the order they were added in — so no amount of making
+  the line thinner or more see-through could stop it from sitting over
+  whatever was directly underneath it. The route now draws in its own layer
+  positioned *underneath* the street-name/highway-shield layer instead, on
+  both your map and every watcher's, so those labels are always fully
+  legible above the route line, regardless of the line's own thickness. It
+  also let the line go back to being fully clear and easy to follow, since
+  it no longer needs to be washed out to keep labels visible. This applies
+  in satellite mode; the plain street map (used automatically below 40mph)
+  uses a single street image with names baked directly into it, so there's
+  no separate label layer to draw the route beneath there — that view
+  already showed street names clearly without a satellite-style road
+  overlay to conflict with in the first place.
 - **A message showed up in the panel but wasn't read aloud** — either voice
   guidance itself is off (check the 🔊/🔇 icon in the top bar), or it was
   still busy reading an actual turn instruction when the message arrived
@@ -795,6 +808,20 @@ avoids that.
   speech-recognition limitations (accent, road noise, weak connection on
   Safari, which can need network access to transcribe) — just tap 🎤 Reply
   again and try once more.
+- **A state (or city/time-zone) crossing comment didn't show up, right
+  around when a photo was taken** — improved in v2026.09.19.5. Taking a
+  photo through the phone's camera can background this browser tab, and on
+  some phones a backgrounded tab gets its memory reclaimed and silently
+  reloaded the moment you switch back to it — which, if it happens to land
+  right as you cross a state/city/time-zone line, used to make the app
+  quietly (and correctly, for an ordinary reopen) treat wherever you land as
+  "where you started," with no announcement for the crossing that had just
+  happened. The app now remembers the state/city/zone it last confirmed you
+  in and carries that forward through exactly this kind of reload, so once
+  you've driven a bit further the crossing still gets caught, announced, and
+  logged — just a little later than usual, rather than not at all. This
+  can't help a crossing missed before this version shipped, only ones going
+  forward.
 - **No automatic state-crossing comment showed up** — it only fires while
   you're actively sharing a leg (nothing to attach a comment to otherwise,
   same as manual comments), and only once you're a full mile past the
