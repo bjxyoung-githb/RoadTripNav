@@ -200,11 +200,14 @@ avoids that.
   your shared trip (section 7) gets the exact same behavior on their end —
   their map follows your live position, pauses the same way if they drag
   to look around, and gets the same Recenter button back.
-- **Satellite / street map** — satellite by default (with labels layered
-  on top), switches to street view below 40mph and back above 50mph, with
-  a several-second delay to avoid flickering in stop-and-go traffic. Tap
-  the button in the map's top-right corner to lock it to one style, or
-  back to Auto.
+- **Satellite / street map** — satellite by default, with both road names
+  and place names layered on top (so satellite mode shows real street
+  names, not just a bare aerial photo), switches to street view below
+  40mph and back above 50mph, with a several-second delay to avoid
+  flickering in stop-and-go traffic. Tap the button in the map's top-right
+  corner to lock it to one style, or back to Auto. Anyone watching your
+  shared trip gets the same street-name overlay on their map too, always
+  on since their map has no satellite/street toggle of its own.
 - **Full-screen map** — tap **⛶ Full Map** in the map's top-left corner to
   hide the turn banner, stats, and everything below and let the map fill
   the screen; tap **↙ Exit Full Map** in the same spot to go back to the
@@ -250,8 +253,10 @@ avoids that.
   rare case the link doesn't work for someone — they'd open this same web
   address, tap **Watch someone else's shared trip**, and enter it by hand.)
   Either way they end up seeing your route and a live-updating arrow at
-  your position (rotated to your direction of travel, with your current
-  speed/heading, elevation, and the weather right where you are), plus any
+  your position (rotated to your direction of travel — tap it for your
+  current speed and heading, tucked behind a tap rather than an
+  always-visible label so it doesn't sit on top of the route or the arrow
+  itself), plus elevation and the weather right where you are, plus any
   photos/videos/comments you add — all without installing anything or
   creating an account. If you reroute mid-drive (whether you tapped **🔄
   Reroute** on the offer banner or it recalculated automatically), the blue
@@ -261,8 +266,11 @@ avoids that.
   Their status line also shows an estimated **Hours to go**, worked out
   from your shared route data the same way as the tap-for-ETA feature
   below. A collapsible **⛰ Mountains Nearby** section on
-  their screen shows named peaks around your current position too, the
-  same way it does on your own dashboard. Use the 📷, 🎥, and 💬 buttons in this panel to drop
+  their screen lists named peaks around your current position too — listed
+  only, with no separate pins added to their map for it (unlike your own
+  dashboard, which does pin the closest few), to keep their map, which
+  already has your live position and every photo/comment pin on it,
+  readable on a phone-sized screen. Use the 📷, 🎥, and 💬 buttons in this panel to drop
   a geotagged photo, video link, or comment; they show up as pins on both
   your map and every viewer's map. Each one is tagged with the GPS
   coordinates, temperature, and elevation at the moment you added it,
