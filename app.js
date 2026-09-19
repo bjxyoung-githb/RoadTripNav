@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.18.5';
+const APP_VERSION = 'v2026.09.19.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -300,7 +300,7 @@ const state = {
   tzTrack: { confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, peakMarkers: [], fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -1609,8 +1609,20 @@ function initMap() {
     maxZoom: 19,
   }).addTo(state.map);
 
-  // Road/place name labels drawn on top of the satellite imagery, so
-  // satellite mode still shows street names rather than being a bare photo.
+  // Road network + street name labels drawn on top of the satellite
+  // imagery, so satellite mode actually shows street names as you get
+  // close in, rather than a bare aerial photo. Street mode doesn't need
+  // this layer at all — the OSM street tiles above already have street
+  // names baked in. Added before satLabelsLayer below so place-name labels
+  // stack on top of road labels, not the other way around (Esri's own
+  // recommended stacking order for a satellite-hybrid map).
+  state.satRoadsLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Esri',
+    maxZoom: 19,
+  }).addTo(state.map);
+
+  // Place-name/boundary labels drawn on top of both the imagery and the
+  // road layer above — city, county, and water body names.
   state.satLabelsLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Esri',
     maxZoom: 19,
@@ -1620,6 +1632,7 @@ function initMap() {
   state.streetLayer.setOpacity(0);
   state.satLayer.setOpacity(1);
   state.satLabelsLayer.setOpacity(1);
+  state.satRoadsLayer.setOpacity(1);
 
   state.mapLayerMode = 'auto'; // 'auto' | 'satellite' | 'street' (manual lock)
   state.layerSwitch = { belowSince: null, aboveSince: null };
@@ -1754,6 +1767,7 @@ function setEffectiveLayer(layer) {
   const showSat = layer === 'satellite';
   state.satLayer.setOpacity(showSat ? 1 : 0);
   state.satLabelsLayer.setOpacity(showSat ? 1 : 0);
+  state.satRoadsLayer.setOpacity(showSat ? 1 : 0);
   state.streetLayer.setOpacity(showSat ? 0 : 1);
   refreshLayerControlLabel();
 }
@@ -3657,7 +3671,6 @@ function stopWatching() {
   state.watch.weatherLoc = null;
   state.watch.peaksFetchedAt = 0;
   state.watch.peaksLoc = null;
-  state.watch.peakMarkers = [];
   if (state.watch.map) { state.watch.map.remove(); state.watch.map = null; }
   state.watch.routeLine = null;
   state.watch.routeCoordsVersion = undefined; // undefined (not null) marks "never drawn yet" — see renderWatchTrip()
@@ -3682,7 +3695,11 @@ function liveMarkerIcon(heading) {
   });
 }
 
-function liveTooltipText(loc) {
+// Speed + direction of travel, shown in a tap-to-open popup on the live
+// marker rather than an always-visible banner — family watching asked for
+// this, since a permanent label right above the marker covered up both the
+// route line and the marker itself on a phone-sized map.
+function liveMarkerStatusText(loc) {
   const speedMph = (typeof loc.speed === 'number' && loc.speed >= 0) ? Math.round(loc.speed * MPS_TO_MPH) : null;
   const dirTxt = (typeof loc.heading === 'number' && !isNaN(loc.heading)) ? compass(loc.heading) : null;
   const parts = [];
@@ -3722,6 +3739,12 @@ async function maybeRefreshWatchWeather(loc) {
 // than the driver's copy (15 min / 10 mi vs. 8/8) since this runs on top of
 // whatever the traveler's own phone is already asking Overpass for, and
 // there may be more than one viewer doing this at once.
+//
+// Unlike the driver's own copy of this panel, this one only ever populates
+// the "⛰ Mountains Nearby" list below the map — no map pins — by request
+// from family watching: pins (plus the driver's live position and photo/
+// event pins) were crowding the map on a phone-sized screen. state.watch
+// no longer keeps a peakMarkers array as a result.
 async function maybeRefreshWatchPeaks(loc) {
   const w = state.watch;
   const now = Date.now();
@@ -3748,7 +3771,6 @@ out 60;`;
     items.sort((a, b) => a.dist - b.dist);
     items = items.slice(0, 10);
 
-    clearMarkers(state.watch.peakMarkers, state.watch.map);
     if (panel) {
       panel.innerHTML = items.length
         ? items.map((el) => `
@@ -3758,22 +3780,6 @@ out 60;`;
             </div><div class="item-right">${fmtMiles(el.dist)}</div></div>`).join('')
         : '<span class="muted">No named peaks with elevation data within 40 miles.</span>';
     }
-    if (state.watch.map) {
-      items.slice(0, 6).forEach((el) => {
-        const icon = L.divIcon({
-          className: 'peak-marker',
-          html: '<div class="peak-marker-icon">⛰️</div>',
-          iconSize: [26, 26],
-          iconAnchor: [13, 22],
-          tooltipAnchor: [0, -18],
-        });
-        const m = L.marker([el.lat, el.lon], { icon, keyboard: false })
-          .bindTooltip(`${el.name} · ${el.eleFt.toLocaleString()} ft`, { permanent: true, direction: 'top', className: 'peak-tooltip' })
-          .bindPopup(`<b>${el.name}</b><br>${el.eleFt.toLocaleString()} ft elevation<br>${fmtMiles(el.dist)} ${compass(el.brg)} of the traveler`)
-          .addTo(state.watch.map);
-        state.watch.peakMarkers.push(m);
-      });
-    }
   } catch (e) {
     if (panel) panel.innerHTML = `<span class="muted">Peak lookup error: ${e.message}</span>`;
   }
@@ -3782,8 +3788,14 @@ out 60;`;
 function initWatchMap() {
   if (state.watch.map) return;
   const map = L.map('watchMap', { zoomControl: true }).setView([37.5, -96], 4);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19 }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery &copy; Esri' }).addTo(map);
+  // Road network + street name labels, then place-name/boundary labels
+  // (cities, counties, water bodies) on top — same two reference layers,
+  // same stacking order, as the driver's own satellite view (see
+  // initMap()), so a watcher gets actual street names too, not just a bare
+  // aerial photo.
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' }).addTo(map);
   state.watch.map = map;
   drawTimezoneLines(map);
   state.watch.fullscreen = false;
@@ -3947,15 +3959,15 @@ function renderWatchTrip() {
   if (map && trip.lastLocation) {
     const ll = [trip.lastLocation.lat, trip.lastLocation.lon];
     const icon = liveMarkerIcon(trip.lastLocation.heading);
-    const tooltipText = liveTooltipText(trip.lastLocation);
+    const statusText = liveMarkerStatusText(trip.lastLocation);
     if (!state.watch.liveMarker) {
       state.watch.liveMarker = L.marker(ll, { icon })
-        .bindTooltip(tooltipText, { permanent: true, direction: 'top', className: 'live-tooltip', offset: [0, -14] })
+        .bindPopup(statusText)
         .addTo(map);
     } else {
       state.watch.liveMarker.setLatLng(ll);
       state.watch.liveMarker.setIcon(icon);
-      state.watch.liveMarker.setTooltipContent(tooltipText);
+      state.watch.liveMarker.setPopupContent(statusText);
     }
     if (state.watch.followMe) {
       map.panTo(ll, { animate: true, duration: 0.5 });
@@ -4785,7 +4797,10 @@ const HELP_TOPICS = {
         elevation there and the current weather. This runs a fresh
         calculation each time and never changes your actual route.</li>
         <li>The button in the top-right cycles Satellite/Street/Auto (Auto
-        switches based on your speed).</li>
+        switches based on your speed). Street mode is plain street-map
+        tiles with street names built in; Satellite mode overlays road
+        names and place names on top of the aerial imagery so you still get
+        street names without losing the satellite view.</li>
         <li><b>⛶ Full Map</b> (top-left) expands the map to fill the
         screen.</li>
         <li>Dashed colored lines mark the boundaries between US time zones,
@@ -5014,6 +5029,12 @@ const HELP_TOPICS = {
         <li>Dashed colored lines mark the boundaries between US time zones,
         each labeled, so you can see at a glance which zone the traveler is
         currently in and what's coming up.</li>
+        <li>Road names and place names are overlaid right on the map, so
+        you can see actual street names, not just a bare aerial photo.</li>
+        <li>Tap the traveler's own marker (the arrow or car icon) for their
+        current speed and direction of travel — it's tucked behind a tap
+        instead of an always-visible label so it doesn't sit on top of the
+        route or the marker itself.</li>
       </ul>`,
   },
   'watch-mountains': {
@@ -5021,7 +5042,8 @@ const HELP_TOPICS = {
     html: `
       <p>Named peaks with known elevation within about 40 miles of the
       traveler's current position, with distance and compass direction from
-      them.</p>
+      them. Listed here only — no separate pins on the map — to keep the
+      map itself readable.</p>
       <p>This is straight-line distance, not a guaranteed line-of-sight — a
       closer ridge could still block the actual view of a listed peak.</p>`,
   },
