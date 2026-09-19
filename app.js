@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.19.4';
+const APP_VERSION = 'v2026.09.19.6';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1673,6 +1673,24 @@ const LAYER_SWITCH_DWELL_MS = 6000; // speed must hold past the threshold this l
 function initMap() {
   state.map = L.map('map', { zoomControl: true }).setView([34.5, -111.5], 6); // AZ-ish default
 
+  // Two custom panes so the route line renders *underneath* the road/place
+  // name reference layers below, instead of Leaflet's default stacking
+  // (any polyline sits in 'overlayPane', z-index 400 — above every tile
+  // layer, z-index 200, no matter what order they were added in). Without
+  // this, the route line would always cover any street name or highway
+  // shield it happened to run directly along, no matter how thin or
+  // transparent it's drawn. 'routePane' sits just above the base
+  // imagery/street tiles; 'roadLabelsPane' (created below, used by
+  // satRoadsLayer/satLabelsLayer) sits above that, so those labels are
+  // always legible over the route line in satellite mode. Markers (your
+  // position, POI/peak pins, photo/comment pins) stay in Leaflet's default
+  // markerPane (z-index 600) and are unaffected — still on top of
+  // everything, as before.
+  state.map.createPane('routePane');
+  state.map.getPane('routePane').style.zIndex = 300;
+  state.map.createPane('roadLabelsPane');
+  state.map.getPane('roadLabelsPane').style.zIndex = 350;
+
   // Both base layers are added up front and kept loaded; switching between
   // them just toggles opacity instead of removing/re-adding a layer, so
   // there's no flash-to-gray / tile refetch stutter when the view changes.
@@ -1693,16 +1711,22 @@ function initMap() {
   // names baked in. Added before satLabelsLayer below so place-name labels
   // stack on top of road labels, not the other way around (Esri's own
   // recommended stacking order for a satellite-hybrid map).
+  // pane: 'roadLabelsPane' (created above) is what keeps this layer's
+  // street names and highway shields legible over the route line — see
+  // that pane's comment.
   state.satRoadsLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Esri',
     maxZoom: 19,
+    pane: 'roadLabelsPane',
   }).addTo(state.map);
 
   // Place-name/boundary labels drawn on top of both the imagery and the
-  // road layer above — city, county, and water body names.
+  // road layer above — city, county, and water body names. Same pane as
+  // satRoadsLayer (added after it, so it stacks on top within that pane).
   state.satLabelsLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Esri',
     maxZoom: 19,
+    pane: 'roadLabelsPane',
   }).addTo(state.map);
 
   state.effectiveLayer = 'satellite';
@@ -1885,10 +1909,14 @@ function updateBaseLayerForSpeed(speedMph) {
 function drawRoute(isReroute) {
   if (state.routeLine) state.map.removeLayer(state.routeLine);
   const latlngs = state.route.coords.map((c) => [c[1], c[0]]);
-  // weight/opacity kept low enough that road names and highway shields
-  // printed on the map underneath aren't fully blotted out by the line
-  // itself, especially where the route runs right along a labeled road.
-  state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 4, opacity: 0.65 }).addTo(state.map);
+  // pane: 'routePane' (see initMap()) draws this underneath the road/place
+  // name reference layers, so street names and highway shields the route
+  // runs along always stay legible regardless of the line's own weight/
+  // opacity — reduced opacity alone (tried in an earlier version) still
+  // left labels washed out since the line was rendering on top of them no
+  // matter what. Kept slightly less than fully opaque anyway since it's
+  // still drawn above the base satellite/street imagery itself.
+  state.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5, opacity: 0.8, pane: 'routePane' }).addTo(state.map);
 
   // The route geometry's last point is wherever the road network snapped
   // to (the nearest point ORS can actually drive to) — this can land
@@ -2705,6 +2733,68 @@ async function addStateCrossingComment(st) {
   }
 }
 
+// Persists the three "confirmed" crossing-trackers (state/city/time zone)
+// across a full page reload. Each one normally starts fresh at page load
+// and silently adopts wherever you currently are as your starting point
+// (see the "adopt it silently" comments below and in
+// checkUSCityCrossing()/checkUSTimezoneCrossing()) — exactly right for the
+// common case of just reopening the app. But a reload can also happen
+// mid-drive with no warning: most commonly, taking a photo through the
+// phone's camera (the file input with capture="environment" in index.html)
+// backgrounds this tab, and some phones reclaim a backgrounded tab's memory
+// and silently reload it the moment you switch back. If that happens to
+// land right as you cross a state/city/time-zone line, a fresh session
+// would otherwise adopt the new one as if you'd started there, with no
+// announcement or trip-log entry for the crossing that actually just
+// happened. Saving each tracker's last confirmed value here, and restoring
+// it in resumeActiveLeg() before that fresh session's first GPS fix is
+// processed, means the normal mile-buffer confirmation logic picks the
+// crossing back up and still announces it once you've driven a bit
+// further, instead of it going missing entirely.
+const GEO_TRACK_STORAGE_KEY = 'rtn_geoTrack';
+
+function saveConfirmedGeoTracking() {
+  try {
+    localStorage.setItem(GEO_TRACK_STORAGE_KEY, JSON.stringify({
+      state: state.usStateTrack.confirmed || null,
+      cityInitialized: state.usCityTrack.initialized,
+      city: state.usCityTrack.confirmed || null,
+      tzId: state.tzTrack.confirmed ? state.tzTrack.confirmed.ianaId : null,
+    }));
+  } catch (e) {
+    // Best-effort — private browsing or a full storage quota shouldn't
+    // interrupt anything else.
+  }
+}
+
+// Called once from resumeActiveLeg(), before its first onLocationUpdate().
+function restoreConfirmedGeoTracking() {
+  try {
+    const raw = localStorage.getItem(GEO_TRACK_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved.state) {
+      state.usStateTrack.confirmed = saved.state;
+      state.usStateTrack.candidate = null; state.usStateTrack.candidateMiles = 0; state.usStateTrack.lastLoc = null;
+    }
+    if (saved.cityInitialized) {
+      state.usCityTrack.initialized = true;
+      state.usCityTrack.confirmed = saved.city || null;
+      state.usCityTrack.candidate = null; state.usCityTrack.candidateMiles = 0; state.usCityTrack.lastLoc = null;
+    }
+    if (saved.tzId && window.US_TIMEZONES_DATA) {
+      const tz = window.US_TIMEZONES_DATA.find((z) => z.ianaId === saved.tzId);
+      if (tz) {
+        state.tzTrack.confirmed = tz;
+        state.tzTrack.candidate = null; state.tzTrack.candidateMiles = 0; state.tzTrack.lastLoc = null;
+      }
+    }
+  } catch (e) {
+    // Best-effort — a corrupt/unreadable saved value just leaves the
+    // trackers at their normal fresh-session defaults.
+  }
+}
+
 // Called from onLocationUpdate() on every GPS fix while a route is active.
 // Requires being confirmed inside the new state for US_STATE_CROSS_MILES of
 // actual travel (not just one fix past the line) before announcing, so a
@@ -2721,6 +2811,7 @@ function checkUSStateCrossing(loc) {
     // starting in. Adopt it silently; you already know where you are.
     track.confirmed = detected.name;
     track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    saveConfirmedGeoTracking();
     return;
   }
   if (detected.name === track.confirmed) {
@@ -2738,6 +2829,7 @@ function checkUSStateCrossing(loc) {
     track.confirmed = detected.name;
     track.candidate = null;
     track.candidateMiles = 0;
+    saveConfirmedGeoTracking();
     if (state.share.active) {
       addStateCrossingComment(detected);
       announceStateCrossing(detected);
@@ -2846,6 +2938,7 @@ function checkUSCityCrossing(loc) {
     track.initialized = true;
     track.confirmed = detectedName;
     track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    saveConfirmedGeoTracking();
     return;
   }
   if (detectedName === track.confirmed) {
@@ -2863,6 +2956,7 @@ function checkUSCityCrossing(loc) {
     track.confirmed = detectedName;
     track.candidate = null;
     track.candidateMiles = 0;
+    saveConfirmedGeoTracking();
     // Only a real, named city firing counts as "entering" — confirming a
     // null (i.e. confirming that you've left the last city) is silent.
     if (detected && state.share.active) {
@@ -3004,6 +3098,7 @@ function checkUSTimezoneCrossing(loc) {
     // starting in. Adopt it silently; you already know what time it is.
     track.confirmed = detected;
     track.candidate = null; track.candidateMiles = 0; track.lastLoc = loc;
+    saveConfirmedGeoTracking();
     return;
   }
   if (detected.name === track.confirmed.name) {
@@ -3022,6 +3117,7 @@ function checkUSTimezoneCrossing(loc) {
     track.confirmed = detected;
     track.candidate = null;
     track.candidateMiles = 0;
+    saveConfirmedGeoTracking();
     const fromOffset = fromTz ? currentUtcOffsetMinutes(fromTz.ianaId) : null;
     const toOffset = currentUtcOffsetMinutes(detected.ianaId);
     const text = timezoneCrossingText(fromTz, detected);
@@ -3891,14 +3987,22 @@ out 60;`;
 function initWatchMap() {
   if (state.watch.map) return;
   const map = L.map('watchMap', { zoomControl: true }).setView([37.5, -96], 4);
+  // Same two custom panes as the driver's own map (see initMap()'s
+  // comment) so the route line renders underneath the road/place name
+  // reference layers instead of covering the street names and highway
+  // shields it runs along.
+  map.createPane('routePane');
+  map.getPane('routePane').style.zIndex = 300;
+  map.createPane('roadLabelsPane');
+  map.getPane('roadLabelsPane').style.zIndex = 350;
   L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery &copy; Esri' }).addTo(map);
   // Road network + street name labels, then place-name/boundary labels
   // (cities, counties, water bodies) on top — same two reference layers,
   // same stacking order, as the driver's own satellite view (see
   // initMap()), so a watcher gets actual street names too, not just a bare
   // aerial photo.
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' }).addTo(map);
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri', pane: 'roadLabelsPane' }).addTo(map);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri', pane: 'roadLabelsPane' }).addTo(map);
   state.watch.map = map;
   drawTimezoneLines(map);
   state.watch.fullscreen = false;
@@ -4044,9 +4148,11 @@ function renderWatchTrip() {
       const isFirstDraw = state.watch.routeCoordsVersion === undefined;
       if (state.watch.routeLine) { map.removeLayer(state.watch.routeLine); }
       const latlngs = trip.routeCoords.map((p) => [p.lat, p.lon]);
-      // Same reduced weight/opacity as the driver's map (drawRoute()) so
-      // road names and highway shields underneath the line stay legible.
-      state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 4, opacity: 0.65 }).addTo(map);
+      // pane: 'routePane' (see initWatchMap()) — same fix as the driver's
+      // map (drawRoute()): draws underneath the road/place name reference
+      // layers so labels and highway shields the route runs along stay
+      // legible, regardless of the line's own weight/opacity.
+      state.watch.routeLine = L.polyline(latlngs, { color: '#3b82f6', weight: 5, opacity: 0.8, pane: 'routePane' }).addTo(map);
       // Only snap/zoom the viewer's map on the very first draw. A reroute
       // sends a new route that only spans from the traveler's current spot
       // onward, so re-fitting bounds on every redraw would yank a watcher's
@@ -4680,6 +4786,15 @@ async function resumeActiveLeg(snap) {
   state.rerouteOffer = null;
   state.announced = new Set();
   state.arrivalAnnounced = false;
+  // A fresh page load (which is what "Resume Trip" always follows — see
+  // GEO_TRACK_STORAGE_KEY's comment above) would otherwise silently adopt
+  // wherever this GPS fix lands as your starting state/city/time zone, with
+  // no announcement — including in the specific case this exists for: the
+  // reload happened mid-drive (e.g. triggered by opening the phone's camera
+  // to take a photo) right as you crossed a line. Restoring what was last
+  // confirmed before the reload lets that crossing still get caught and
+  // announced once you've driven a bit further.
+  restoreConfirmedGeoTracking();
 
   document.getElementById('resumeLegBanner').classList.add('hidden');
   document.getElementById('setupScreen').classList.add('hidden');
