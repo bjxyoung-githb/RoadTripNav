@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.19.6';
+const APP_VERSION = 'v2026.09.20.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -1498,18 +1498,48 @@ function wireRerouteOffer() {
   });
 }
 
-const VOICE_ANNOUNCE_MILES = 1.0;
-const VOICE_IMMINENT_MILES = 0.25;
+const VOICE_ANNOUNCE_MILES = 1.0; // baseline "heads up" distance — floor, never less than this even at low speed
+const VOICE_IMMINENT_MILES = 0.25; // baseline "right now" distance — same, floor only
 
-function announceStepIfDue(stepIdx, step, distToManeuver) {
+// A FIXED distance is a SHRINKING amount of warning time the faster you're
+// going — 0.25 miles is about 30 seconds at 30mph, but only about 11
+// seconds at 80mph, which is backwards from what's actually needed (more
+// reaction/lane-change time at highway speed, not less). That mismatch is
+// what made an announcement land "as I'm passing the turn" at interstate
+// speed rather than clearly before it — the announcement wasn't wrong or
+// late by the app's own (distance) yardstick, it just didn't correspond to
+// enough real seconds once going fast enough. Past
+// VOICE_SCALE_ABOVE_MPH (the speed at which the fixed-mile floors above
+// already work out to this many seconds anyway, so this never shortens
+// anything relative to before), both distances grow with your actual speed
+// so they represent a roughly constant number of *seconds* of warning —
+// VOICE_ANNOUNCE_LEAD_SECONDS_FAR / _NEAR — no matter how fast you're
+// driving, instead of the same fixed distance meaning less and less time
+// the faster you go.
+const VOICE_ANNOUNCE_LEAD_SECONDS_FAR = 60;
+const VOICE_ANNOUNCE_LEAD_SECONDS_NEAR = 15;
+
+function voiceAnnounceThresholds(speedMph) {
+  if (typeof speedMph !== 'number' || speedMph <= 0) {
+    return { far: VOICE_ANNOUNCE_MILES, near: VOICE_IMMINENT_MILES };
+  }
+  const milesPerSecond = speedMph / 3600;
+  return {
+    far: Math.max(VOICE_ANNOUNCE_MILES, milesPerSecond * VOICE_ANNOUNCE_LEAD_SECONDS_FAR),
+    near: Math.max(VOICE_IMMINENT_MILES, milesPerSecond * VOICE_ANNOUNCE_LEAD_SECONDS_NEAR),
+  };
+}
+
+function announceStepIfDue(stepIdx, step, distToManeuver, speedMph) {
   if (!state.announced) state.announced = new Set();
+  const { far, near } = voiceAnnounceThresholds(speedMph);
   const farKey = stepIdx + '_far';
   const nearKey = stepIdx + '_near';
-  if (distToManeuver <= VOICE_ANNOUNCE_MILES && !state.announced.has(farKey)) {
+  if (distToManeuver <= far && !state.announced.has(farKey)) {
     state.announced.add(farKey);
     speak(`In ${fmtMiles(distToManeuver)}, ${step.instruction}.`);
   }
-  if (distToManeuver <= VOICE_IMMINENT_MILES && !state.announced.has(nearKey)) {
+  if (distToManeuver <= near && !state.announced.has(nearKey)) {
     state.announced.add(nearKey);
     speak(step.instruction + '.');
   }
@@ -1587,7 +1617,7 @@ async function onLocationUpdate() {
   document.getElementById('statNextTurnDist').textContent = 'in ' + fmtMiles(distToManeuver);
 
   renderSteps(upcomingStepIdx);
-  announceStepIfDue(upcomingStepIdx, upcomingStep, distToManeuver);
+  announceStepIfDue(upcomingStepIdx, upcomingStep, distToManeuver, speedMph);
 
   if (remaining < 0.05) {
     if (!state.arrivalAnnounced) {
@@ -3495,7 +3525,15 @@ function renderSharePanel() {
   document.getElementById('pauseSharingBtn').onclick = () => {
     if (sh.paused) resumeSharingFromPause(); else pauseSharingForNight();
   };
-  document.getElementById('stopSharingBtn').onclick = stopSharing;
+  // Confirm first — an accidental tap here (a bump in the road, a mis-tap
+  // reaching for the photo button) used to silently cut off live sharing
+  // with no way to catch it before family started seeing "position may be
+  // stale." Stays a plain window.confirm(), same pattern already used for
+  // removing a "My past trip logs" entry, rather than a custom modal.
+  document.getElementById('stopSharingBtn').onclick = () => {
+    if (!window.confirm('Stop sharing your live position?\n\nFamily keeps access to this leg\'s route, photos, and comments afterward — just no more live position updates. This doesn\'t end the leg itself; you can keep driving and navigating normally.')) return;
+    stopSharing();
+  };
   document.getElementById('videoLinkSendBtn').onclick = () => {
     const input = document.getElementById('videoLinkTextInput');
     addVideoLink(input.value);
@@ -4648,6 +4686,14 @@ function wireVoiceControls() {
 
 function wireEndLeg() {
   document.getElementById('endLegBtn').addEventListener('click', () => {
+    // Confirm first — same reasoning as stopSharingBtn above: this ends
+    // live sharing too (if it's on), and a stray tap here (reaching for
+    // something else, a bump in the road) shouldn't be able to end a leg
+    // with no way to catch it first.
+    const msg = state.share.active
+      ? 'End this leg and go back to planning the next one?\n\nThis also stops live sharing — family keeps access to the route, photos, and comments, just no more live position updates.'
+      : 'End this leg and go back to planning the next one?';
+    if (!window.confirm(msg)) return;
     if (state.share.active) stopSharing();
     state.route = null;
     state.currentLegLabel = null;
@@ -4993,7 +5039,9 @@ const HELP_TOPICS = {
         Daylight, Drive Timer, full directions, and Share &amp; Trip Log)
         each have their own <b>?</b> for details.</li>
         <li><b>🏁 End This Leg / Plan Next Leg</b> wraps up this leg and
-        takes you back to planning the next one.</li>
+        takes you back to planning the next one — asks you to confirm
+        first, so a stray tap (a bump in the road, reaching for something
+        else) can't end it by accident.</li>
       </ul>`,
   },
   'trip-progress': {
@@ -5163,7 +5211,8 @@ const HELP_TOPICS = {
         <li><b>Stop Sharing</b> only stops live position updates — the same
         link/passcode keeps working afterward for anyone to view the route,
         photos, and comments; see <b>My past trip logs</b> on the setup
-        screen for how to pull it back up yourself.</li>
+        screen for how to pull it back up yourself. Asks you to confirm
+        first, so a stray tap can't cut off live sharing by accident.</li>
       </ul>`,
   },
   'viewer-messages': {
