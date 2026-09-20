@@ -109,7 +109,11 @@ avoids that.
 - **Route & turn-by-turn** — calculated by OpenRouteService; the map shows
   your route, your live position, and the full step list with the current
   step highlighted. Spoken prompts announce each turn about a mile ahead
-  and again right before it. The route can only end on a road the map data
+  and again right before it at ordinary speeds; above about 60mph both
+  announcements move further out so they still give you a full 60/15
+  seconds of warning instead of the same fixed distance shrinking to fewer
+  and fewer seconds the faster you're going (see the turn-by-turn
+  troubleshooting entry below). The route can only end on a road the map data
   marks as drivable — if your exact pin sits on a private complex/HOA road
   or similar that isn't mapped that way, the route will stop at the nearest
   public road instead. When that gap is more than about 500 feet, a 🏠 pin
@@ -296,7 +300,10 @@ avoids that.
   live position updates, but the same link/passcode keeps showing that
   leg's route, photos, and comments afterward (anyone can still open it,
   they just won't see your position move); see **My past trip logs**
-  below for how you pull it back up yourself.
+  below for how you pull it back up yourself. Both **Stop Sharing** and
+  **🏁 End This Leg** ask you to confirm before doing anything, specifically
+  so a stray tap (reaching for the camera button, a bump in the road) can't
+  cut off sharing or end a leg by accident — tap Cancel and nothing changes.
 - **Naming the trip** — a **✏️** button next to the trip title at the top
   of this panel lets you set (or change) what this trip/leg is called, any
   time — before you start sharing, mid-drive, whatever. It's the same
@@ -542,6 +549,29 @@ avoids that.
   back to a full-route search if nothing in that window is close enough
   (the first GPS fix of a leg, or after a real wrong turn takes you well
   off the route).
+- **A spoken turn instruction still arrived right as I was passing the
+  turn (or already on the exit ramp), driving fast on an interstate** —
+  improved in v2026.09.20.2, a different cause than the interchange bug
+  above. The "heads up" and "right now" announcements used to fire at the
+  same fixed distance (about 1 mile, then about a quarter mile) no matter
+  your speed — a quarter mile is roughly 30 seconds of warning at 30mph,
+  but only about 11 seconds at 80mph, so the faster you were going, the
+  less real warning time you actually got, backwards from what you'd want.
+  Past 60mph, both distances now grow with your actual speed so they hold
+  steady at about a minute and about 15 seconds of warning no matter how
+  fast you're driving, instead of shrinking. Below 60mph nothing changes —
+  you were already getting more than that much warning at ordinary speeds.
+  Separately: if the instruction itself says something generic like "Keep
+  right" for what's actually an interstate exit, rather than "Take the
+  exit ramp," that wording comes straight from OpenRouteService (the free
+  routing service this app uses) — it classifies a highway exit as the
+  same kind of maneuver as an ordinary lane fork and doesn't have a
+  distinct "take the exit" phrase in its vocabulary the way a paid service
+  like Google or Apple Maps does. The distance countdown to it is still
+  accurate; the wording just isn't always as specific as you'd get from a
+  paid map. Let me know if this keeps causing missed turns even with more
+  warning time, and I can look at whether there's a reliable way to detect
+  "this fork is actually an exit ramp" and say so explicitly.
 - **The "Full turn-by-turn" list fought attempts to scroll down and read
   ahead** — fixed in v2026.09.19.2. It used to re-scroll itself back to the
   current turn on every single GPS update (every few seconds), whether or
@@ -642,6 +672,12 @@ avoids that.
 - **"📤 Share Link" doesn't do anything, or there's no share popup** — some
   browsers (mostly on desktop) don't offer that share-sheet feature; tap
   **📋 Copy** instead and paste the link into your text/email app by hand.
+- **Accidentally hit Stop Sharing or End This Leg** — as of v2026.09.20.1,
+  both buttons now ask "Are you sure?" before doing anything, specifically
+  so a stray tap (a bump in the road, reaching for the camera button while
+  a passenger is trying to grab a photo) can't cut off sharing or end a leg
+  with no way to catch it. Tap Cancel on the popup and nothing happens —
+  sharing/the leg continues exactly as it was.
 - **"Photo is too large to fit even after compression"** — very rare; means
   the app shrank the photo as far as it reasonably can and it still won't
   fit. Try a different photo, or a screenshot of it, instead.
