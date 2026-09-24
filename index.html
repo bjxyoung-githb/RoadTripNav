@@ -25,7 +25,7 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.09.20.2">
+<link rel="stylesheet" href="style.css?v=v2026.09.20.3">
 </head>
 <body>
 
@@ -170,6 +170,17 @@
     <label>Label this leg (optional)</label>
     <input id="legLabelInput" type="text" placeholder="e.g. Day 3 - to Sedona">
 
+    <div id="tripPlanSection" style="margin-top:14px;">
+      <label>Planning multiple days? <button class="help-btn" data-help="trip-plan" title="Help" aria-label="Help">?</button></label>
+      <div class="row" style="gap:8px;">
+        <button id="addStopBtn" class="ghost-btn small" disabled>➕ Add as a stop, plan another day</button>
+        <button id="clearTripPlanBtn" class="ghost-btn small hidden">Clear plan</button>
+      </div>
+      <div id="tripPlanList" class="legs-list hidden" style="margin-top:10px;"></div>
+      <button id="calcTripPlanBtn" class="primary-btn hidden" style="margin-top:10px;">🚀 Calculate &amp; Start Trip Plan</button>
+      <div class="hint" id="tripPlanHint">Fill in a destination above, then tap "Add as a stop" instead of Calculate Route — each stop becomes a day's leg with its own overnight marker, and you'll get ONE shared link that covers the whole plan.</div>
+    </div>
+
     <button id="calcRouteBtn" class="primary-btn" disabled>Calculate Route</button>
     <div id="setupError" class="error-text"></div>
 
@@ -211,6 +222,14 @@
           <div id="watchProgressFill" class="trip-progress-fill" style="width:0%"></div>
         </div>
       </div>
+      <div id="watchItineraryPanel" class="hidden" style="margin:10px 0;">
+        <div class="section-title-row" style="margin:0 0 6px;">
+          <span class="small-label">🗺️ Trip Plan</span>
+          <button class="help-btn" data-help="watch-itinerary" title="Help" aria-label="Help">?</button>
+        </div>
+        <div id="watchItineraryList" class="legs-list"></div>
+      </div>
+
       <div id="watchWeather" class="watch-weather muted"></div>
       <div id="watchElevation" class="watch-weather muted"></div>
       <div id="watchMap" class="watch-map"></div>
@@ -379,9 +398,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="assets/us-states-data.js?v=v2026.09.20.2"></script>
-<script src="assets/us-cities-data.js?v=v2026.09.20.2"></script>
-<script src="assets/us-timezones-data.js?v=v2026.09.20.2"></script>
-<script src="app.js?v=v2026.09.20.2"></script>
+<script src="assets/us-states-data.js?v=v2026.09.20.3"></script>
+<script src="assets/us-cities-data.js?v=v2026.09.20.3"></script>
+<script src="assets/us-timezones-data.js?v=v2026.09.20.3"></script>
+<script src="app.js?v=v2026.09.20.3"></script>
 </body>
 </html>
