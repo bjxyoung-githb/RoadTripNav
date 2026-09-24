@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.20.2';
+const APP_VERSION = 'v2026.09.20.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -144,6 +144,7 @@ function persistActiveLeg() {
       destLabel: (state.route.destForReroute && state.route.destForReroute.label) || null,
       legLabel: state.currentLegLabel || null,
       pin: (state.share.active && state.share.pin) || null,
+      itinerary: state.itinerary || null,
       savedAt: Date.now(),
     }));
   } catch (e) { /* localStorage full/unavailable — resume just won't be offered */ }
@@ -259,6 +260,20 @@ const state = {
   geoWatchId: null,
   manualStart: null,    // {lat,lon,label} if user set a manual start
   pendingDest: null,    // {lat,lon,label} chosen from search results before route calc
+  // Multi-day trip plan being BUILT on the setup screen, before it's
+  // calculated — see addStopToPlan()/renderTripPlanUI(). Each entry:
+  // {fromLabel, destLabel, destLat, destLon, label}. null/empty means "no
+  // plan being built right now," the ordinary single-leg flow.
+  pendingItinerary: [],
+  // The ACTIVE, already-calculated multi-day trip plan, once
+  // calculateTripPlan() has run — see that function's comment for the
+  // shape, and advanceToNextLeg()/wireEndLeg() for how driving through it
+  // day by day works. null outside of a multi-day trip (the common case);
+  // state.route/state.currentLegLabel always describe whichever single day
+  // is currently being driven, exactly as they do without an itinerary at
+  // all, so none of the live-driving code (turn-by-turn, progress, reroute,
+  // etc.) needs to know or care whether a multi-day plan exists.
+  itinerary: null,
   route: null,          // {coords:[[lon,lat]], cumDist:[mi], cumDur:[s], steps:[], totalDist, totalDur}
   currentLegLabel: null, // whatever was typed in "Label this leg" when the route was calculated — see persistActiveLeg()
   currentStepIndex: 0,
@@ -300,7 +315,7 @@ const state = {
   tzTrack: { confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
   share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
-  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false },
+  watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false, itineraryLine: null, overnightMarkers: [], itineraryDrawn: false },
 };
 
 /* ============================== ROUTE-SAMPLE MARKERS CLEANUP ============================== */
@@ -794,7 +809,274 @@ function updateSetupStartLabel() {
 
 function refreshCalcButton() {
   const calcBtn = document.getElementById('calcRouteBtn');
-  calcBtn.disabled = !(getStartCoords() && state.pendingDest && state.settings.orsKey);
+  const addStopBtn = document.getElementById('addStopBtn');
+  const calcPlanBtn = document.getElementById('calcTripPlanBtn');
+  const hasPlan = state.pendingItinerary && state.pendingItinerary.length > 0;
+  // Once a trip plan has at least one stop queued, the plain single-leg
+  // Calculate Route button steps aside for "Add as a stop"/"Calculate &
+  // Start Trip Plan" below — having both active at once would leave it
+  // ambiguous whether a typed destination is "today's whole route" or
+  // "the next day in the plan." See renderTripPlanUI().
+  calcBtn.disabled = hasPlan || !(getStartCoords() && state.pendingDest && state.settings.orsKey);
+  // Stop 1 still needs a real starting point (GPS or manual); stop 2+
+  // always starts from wherever the previous stop ends, so the starting
+  // point requirement only applies before any stops are queued yet.
+  if (addStopBtn) addStopBtn.disabled = !((hasPlan || getStartCoords()) && state.pendingDest && state.settings.orsKey);
+  if (calcPlanBtn) calcPlanBtn.disabled = !(hasPlan && state.settings.orsKey);
+}
+
+/* ============================== MULTI-DAY TRIP PLAN ============================== */
+// Lets you build several days' worth of legs at once (each with its own
+// overnight-stop marker) before you start driving, then calculates and
+// drives through them one day at a time under ONE shared trip — see
+// calculateTripPlan(), advanceToNextLeg(), and wireEndLeg() for how a day
+// actually gets driven and handed off to the next. The plan itself is just
+// a queue of destinations built with the exact same search/fine-tune-pin
+// UI already used for a single-leg destination (see wireSetupScreen()) —
+// "Add as a stop" reuses whatever's currently picked in state.pendingDest
+// instead of calculating it as today's whole route.
+
+// Redraws the queued-stops list on the setup screen and shows/hides the
+// buttons around it. Called after every add/remove and on page load.
+function renderTripPlanUI() {
+  const list = document.getElementById('tripPlanList');
+  const calcPlanBtn = document.getElementById('calcTripPlanBtn');
+  const clearBtn = document.getElementById('clearTripPlanBtn');
+  const addBtn = document.getElementById('addStopBtn');
+  const calcBtn = document.getElementById('calcRouteBtn');
+  const hint = document.getElementById('tripPlanHint');
+  if (!list) return;
+  const stops = state.pendingItinerary || [];
+  const has = stops.length > 0;
+  list.classList.toggle('hidden', !has);
+  calcPlanBtn.classList.toggle('hidden', !has);
+  clearBtn.classList.toggle('hidden', !has);
+  calcBtn.classList.toggle('hidden', has);
+  if (addBtn) addBtn.textContent = has ? '➕ Add another day' : '➕ Add as a stop, plan another day';
+  if (hint) hint.classList.toggle('hidden', has);
+  list.innerHTML = stops.map((s, i) => `
+    <div class="leg-item">
+      <span>Day ${i + 1}${s.label ? ': ' + escapeHtml(s.label) : ''} — ${escapeHtml(s.fromLabel)} → ${escapeHtml(s.destLabel)}</span>
+      <button type="button" class="ghost-btn small remove-plan-stop-btn" data-i="${i}" title="Remove">🗑</button>
+    </div>`).join('');
+  list.querySelectorAll('.remove-plan-stop-btn').forEach((btn) => {
+    btn.onclick = () => {
+      const i = parseInt(btn.dataset.i, 10);
+      state.pendingItinerary.splice(i, 1);
+      // Re-chain each remaining stop's "from" label — removing one from the
+      // middle means the next one's actual starting point just changed.
+      state.pendingItinerary.forEach((stop, j) => {
+        stop.fromLabel = j === 0
+          ? (state.manualStart ? state.manualStart.label : 'your starting point')
+          : state.pendingItinerary[j - 1].destLabel;
+      });
+      renderTripPlanUI();
+      refreshCalcButton();
+    };
+  });
+  refreshCalcButton();
+}
+
+// "Add as a stop" — takes whatever's currently picked in the Destination
+// field (same state.pendingDest a plain Calculate Route would use) and
+// appends it to the plan instead, then clears the field so the next stop
+// can be entered. The very first stop's "from" is today's actual starting
+// point (GPS or manual, same as a single-leg trip); every stop after that
+// starts wherever the previous one ends.
+function addStopToPlan() {
+  const dest = state.pendingDest;
+  const errEl = document.getElementById('setupError');
+  if (!dest) { errEl.textContent = 'Pick a destination first.'; return; }
+  errEl.textContent = '';
+  if (!state.pendingItinerary) state.pendingItinerary = [];
+  const fromLabel = state.pendingItinerary.length
+    ? state.pendingItinerary[state.pendingItinerary.length - 1].destLabel
+    : (state.manualStart ? state.manualStart.label : 'your starting point');
+  const label = document.getElementById('legLabelInput').value.trim();
+  state.pendingItinerary.push({ fromLabel, destLabel: dest.label, destLat: dest.lat, destLon: dest.lon, label: label || null });
+  document.getElementById('destInput').value = '';
+  document.getElementById('legLabelInput').value = '';
+  document.getElementById('destResults').innerHTML = '';
+  document.getElementById('destFineTune').classList.add('hidden');
+  state.pendingDest = null;
+  renderTripPlanUI();
+}
+
+function clearTripPlan() {
+  if (!(state.pendingItinerary && state.pendingItinerary.length)) return;
+  if (!window.confirm('Clear the whole trip plan you\'ve built so far? This only clears what you\'ve queued up — nothing has been calculated or shared yet.')) return;
+  state.pendingItinerary = [];
+  renderTripPlanUI();
+}
+
+// Samples each day's already-calculated route down to a modest number of
+// points and concatenates them into one continuous overview line — this is
+// what lets a watcher see the WHOLE planned trip (including days not
+// driven yet) on their map, separate from the normal live routeCoords
+// field, which only ever describes the day actually being driven right
+// now (see renderWatchTrip()). Total point count is capped regardless of
+// how many days are in the plan, so a two-week itinerary doesn't balloon
+// the shared document's size the way sampling each day at a fixed count
+// would.
+function buildItineraryOverviewCoords(itinerary) {
+  const perLeg = Math.max(15, Math.floor(600 / itinerary.legs.length));
+  const out = [];
+  itinerary.legs.forEach((leg) => {
+    sampleRouteForShare(leg.route, perLeg).forEach((p) => out.push({ lat: p.lat, lon: p.lon }));
+  });
+  return out;
+}
+
+// Calculates every queued stop as its own leg (in order, each one's start
+// being the previous stop's destination) and starts driving Day 1 —
+// otherwise follows the exact same steps as the plain Calculate Route
+// button (see wireSetupScreen()'s calcBtn handler), just repeated per day
+// and wrapped up into state.itinerary at the end. Reusing
+// calcRouteWithPreference() per leg (rather than one combined multi-
+// waypoint request) means every existing per-day feature — reroute,
+// turn-by-turn, the route-preference setting — keeps working completely
+// unchanged, since state.route always describes one ordinary single-leg
+// route, exactly as it does outside of a trip plan.
+async function calculateTripPlan() {
+  const stops = state.pendingItinerary;
+  const errEl = document.getElementById('setupError');
+  const calcPlanBtn = document.getElementById('calcTripPlanBtn');
+  errEl.textContent = '';
+  if (!stops || !stops.length) return;
+  const firstStart = getStartCoords();
+  if (!firstStart) { errEl.textContent = 'Set a starting point first.'; return; }
+  calcPlanBtn.disabled = true;
+  const origText = calcPlanBtn.textContent;
+  try {
+    const legs = [];
+    let legStart = firstStart;
+    for (let i = 0; i < stops.length; i++) {
+      calcPlanBtn.textContent = `Calculating day ${i + 1} of ${stops.length}…`;
+      const dest = { lat: stops[i].destLat, lon: stops[i].destLon, label: stops[i].destLabel };
+      const route = await calcRouteWithPreference(legStart, dest);
+      route.destForReroute = dest;
+      legs.push({ label: stops[i].label, destLabel: stops[i].destLabel, destLat: stops[i].destLat, destLon: stops[i].destLon, route });
+      legStart = dest;
+    }
+    state.itinerary = { legs, currentLegIdx: 0 };
+    state.pendingItinerary = [];
+
+    const first = legs[0];
+    state.route = first.route;
+    state.currentStepIndex = 0;
+    nearestIndexCache = 0;
+    state.lastRerouteAt = 0;
+    state.rerouteOfferState = 'none';
+    state.rerouteOffer = null;
+    state.announced = new Set();
+    state.arrivalAnnounced = false;
+    state.currentLegLabel = first.label || null;
+
+    state.trip.legs.push({
+      id: 'leg_' + Date.now(),
+      label: first.label || null,
+      destLabel: first.destLabel,
+      destLat: first.destLat, destLon: first.destLon,
+      createdAt: Date.now(),
+    });
+    saveTrip(state.trip);
+    persistActiveLeg();
+
+    document.getElementById('setupScreen').classList.add('hidden');
+    document.getElementById('dashboard').classList.remove('hidden');
+    if (!state.map) initMap();
+    state.followMe = true;
+    if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
+    drawRoute();
+    onLocationUpdate();
+    renderSharePanel();
+    requestNavWakeLock();
+    updateEndLegButtonLabel();
+    toast(`Trip plan ready — ${legs.length} day${legs.length > 1 ? 's' : ''}. Starting Day 1${first.label ? ': ' + first.label : ''}.`, 7000);
+  } catch (e) {
+    errEl.textContent = e.message;
+  } finally {
+    calcPlanBtn.disabled = false;
+    calcPlanBtn.textContent = origText;
+    refreshCalcButton();
+  }
+}
+
+// Relabels the dashboard's end-of-leg button so it's honest about what
+// tapping it actually does right now: advance to tomorrow's already-
+// planned day (multi-day trip, more days left), end the whole trip (multi-
+// day trip, this was the last day), or the plain original wording outside
+// of a trip plan altogether. Called wherever state.itinerary changes.
+function updateEndLegButtonLabel() {
+  const btn = document.getElementById('endLegBtn');
+  if (!btn) return;
+  const it = state.itinerary;
+  if (it && it.currentLegIdx + 1 < it.legs.length) {
+    btn.textContent = `🏁 End Day ${it.currentLegIdx + 1} / Continue to Day ${it.currentLegIdx + 2}`;
+  } else if (it) {
+    btn.textContent = `🏁 End Trip (Day ${it.currentLegIdx + 1} of ${it.legs.length})`;
+  } else {
+    btn.textContent = '🏁 End This Leg / Plan Next Leg';
+  }
+}
+
+// Hands driving off from the day that just ended to the next already-
+// calculated day in the plan, WITHOUT ending the shared trip — the same
+// pin/link keeps working the whole way through, which is the entire point
+// of a trip plan versus starting a brand-new share each morning. If
+// sharing is active, marks it "taking a break" (the same visual/wording as
+// ⏸ Pause for the Night) until you're actually moving again on the new
+// day, exactly like an ordinary overnight stop already works.
+function advanceToNextLeg() {
+  const it = state.itinerary;
+  it.currentLegIdx++;
+  const leg = it.legs[it.currentLegIdx];
+  state.route = leg.route;
+  state.currentLegLabel = leg.label || null;
+  state.currentStepIndex = 0;
+  nearestIndexCache = 0;
+  state.lastRerouteAt = 0;
+  state.rerouteOfferState = 'none';
+  state.rerouteOffer = null;
+  state.announced = new Set();
+  state.arrivalAnnounced = false;
+  state.followMe = true;
+  if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
+  drawRoute();
+  onLocationUpdate();
+  persistActiveLeg();
+  updateEndLegButtonLabel();
+
+  state.trip.legs.push({
+    id: 'leg_' + Date.now(),
+    label: leg.label || null,
+    destLabel: leg.destLabel,
+    destLat: leg.destLat, destLon: leg.destLon,
+    createdAt: Date.now(),
+  });
+  saveTrip(state.trip);
+
+  if (state.share.active && state.fb) {
+    const sh = state.share;
+    sh.paused = true;
+    sh.pausedAt = Date.now();
+    sh.pausedLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+    sh.routeDirty = false; // pushing fresh coords directly below, no need for the throttled path to repeat it
+    state.fb.db.collection('trips').doc(sh.pin).set({
+      legLabel: state.currentLegLabel,
+      destLabel: leg.destLabel,
+      routeCoords: sampleRouteForShare(state.route, 300),
+      totalMiles: state.route.totalDist,
+      routeUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      currentLegIndex: it.currentLegIdx,
+      paused: true,
+      pausedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true }).catch(() => { /* best effort; next location push retries routeCoords via routeDirty */ });
+  }
+
+  renderSharePanel();
+  toast(`Day ${it.currentLegIdx + 1} of ${it.legs.length} ready${leg.label ? ': ' + leg.label : ''}. Tap ▶ Resume Sharing (or just start driving) once you're back on the road.`, 8000);
 }
 
 /* ============================== NWS WEATHER ============================== */
@@ -2096,7 +2378,7 @@ async function startSharing() {
     const { db, uid } = await initFirebase();
     const pin = await generateUniquePin(db, uid);
     const routeCoords = sampleRouteForShare(state.route, 300);
-    await db.collection('trips').doc(pin).set({
+    const payload = {
       ownerUid: uid,
       destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
       legLabel: state.currentLegLabel || null,
@@ -2106,7 +2388,22 @@ async function startSharing() {
       routeCoords,
       totalMiles: state.route.totalDist,
       lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: Date.now() } : null,
-    });
+    };
+    // Part of a multi-day trip plan (see calculateTripPlan()) — include the
+    // whole plan so a watcher sees every day's route and overnight stop
+    // from the moment they open the link, not just today's. itineraryLegs/
+    // itineraryFullRouteCoords/currentLegIndex are the only new fields;
+    // routeCoords above still means exactly what it always has (today's
+    // leg only), so a plain single-leg trip (state.itinerary null, the
+    // common case) writes nothing different from before this feature
+    // existed, and older shared trips with no itinerary field render on a
+    // watcher's screen exactly as they always have.
+    if (state.itinerary) {
+      payload.itineraryLegs = state.itinerary.legs.map((l) => ({ label: l.label || null, destLabel: l.destLabel, lat: l.destLat, lon: l.destLon }));
+      payload.itineraryFullRouteCoords = buildItineraryOverviewCoords(state.itinerary);
+      payload.currentLegIndex = state.itinerary.currentLegIdx;
+    }
+    await db.collection('trips').doc(pin).set(payload);
 
     state.share.active = true;
     state.share.pin = pin;
@@ -3447,7 +3744,25 @@ function renderSharePanel() {
   const tripTitleHtml = state.currentLegLabel
     ? escapeHtml(state.currentLegLabel)
     : '<span class="muted">Untitled trip — tap ✏️ to name it</span>';
+  // Multi-day trip plan indicator: shows which day is currently being
+  // driven, plus a collapsible list of every planned day so you can
+  // double-check the whole itinerary is right without leaving this panel.
+  // Family sees the equivalent of this on the watch screen (see
+  // renderWatchItinerary()) — this is just the driver's own view of it.
+  const itineraryHtml = state.itinerary ? `
+    <div class="itinerary-day-badge">📅 Day ${state.itinerary.currentLegIdx + 1} of ${state.itinerary.legs.length}</div>
+    <details class="itinerary-details">
+      <summary>View full trip plan (${state.itinerary.legs.length} days)</summary>
+      <div class="legs-list">
+        ${state.itinerary.legs.map((leg, i) => `
+          <div class="leg-item${i === state.itinerary.currentLegIdx ? ' leg-item-current' : ''}">
+            <span class="leg-item-num">${i === state.itinerary.currentLegIdx ? '📍' : (i < state.itinerary.currentLegIdx ? '✅' : (i + 1))}</span>
+            <span class="leg-item-label">${escapeHtml(leg.label || leg.destLabel || ('Day ' + (i + 1)))}</span>
+          </div>`).join('')}
+      </div>
+    </details>` : '';
   panel.innerHTML = `
+    ${itineraryHtml}
     <div class="trip-title-row">
       <div class="trip-title-text">${tripTitleHtml}</div>
       <button id="editTripLabelBtn" class="ghost-btn small" title="Rename this trip">✏️</button>
@@ -3913,8 +4228,13 @@ function stopWatching() {
   state.watch.routeCoordsVersion = undefined; // undefined (not null) marks "never drawn yet" — see renderWatchTrip()
   state.watch.liveMarker = null;
   state.watch.etaTapMarker = null; // destroyed along with the map above
+  state.watch.itineraryLine = null; // destroyed along with the map above
+  state.watch.overnightMarkers = []; // destroyed along with the map above
+  state.watch.itineraryDrawn = false;
   state.watch.fullscreen = false;
   document.getElementById('watchScreen').classList.remove('watch-fullscreen');
+  const itinPanel = document.getElementById('watchItineraryPanel');
+  if (itinPanel) itinPanel.classList.add('hidden');
   renderViewerReplies(); // clears/hides any replies shown from the trip just left
 }
 
@@ -4161,9 +4481,14 @@ function renderWatchTrip() {
   // the way this screen always used to look.
   const titleEl = document.getElementById('watchTripTitle');
   if (titleEl) {
-    if (trip.legLabel) { titleEl.textContent = trip.legLabel; titleEl.classList.remove('hidden'); }
+    const isMultiDay = trip.itineraryLegs && trip.itineraryLegs.length > 1;
+    const dayTag = isMultiDay ? ` (Day ${(trip.currentLegIndex || 0) + 1} of ${trip.itineraryLegs.length})` : '';
+    if (trip.legLabel) { titleEl.textContent = trip.legLabel + dayTag; titleEl.classList.remove('hidden'); }
+    else if (dayTag) { titleEl.textContent = dayTag.trim(); titleEl.classList.remove('hidden'); }
     else { titleEl.textContent = ''; titleEl.classList.add('hidden'); }
   }
+
+  renderWatchItinerary(trip);
 
   // Elevation is already sitting on the trip doc (the driver computes it
   // for free off their own route data — see currentElevationFt()), so this
@@ -4172,6 +4497,39 @@ function renderWatchTrip() {
   if (elevEl) {
     const ef = trip.lastLocation && typeof trip.lastLocation.elevationFt === 'number' ? trip.lastLocation.elevationFt : null;
     elevEl.textContent = ef != null ? `⛰ Traveler's current elevation: ${ef.toLocaleString()} ft` : '';
+  }
+
+  // Part of a multi-day trip plan (see calculateTripPlan()/startSharing()):
+  // a light, dashed overview of the WHOLE planned route, plus a marker at
+  // each overnight stop and the final destination, drawn once up front so
+  // family can see the full trip from the moment they open the link —
+  // not just today's leg. Drawn here, BEFORE the current day's routeLine
+  // below, so — sharing the same 'routePane' — it stacks underneath that
+  // brighter, solid "today" line rather than competing with it. Only ever
+  // drawn once (state.watch.itineraryDrawn) since the overview is a
+  // snapshot from planning time; it isn't expected to change day to day,
+  // unlike today's own route which redraws on every reroute.
+  if (map && !state.watch.itineraryDrawn && trip.itineraryFullRouteCoords && trip.itineraryFullRouteCoords.length) {
+    const latlngs = trip.itineraryFullRouteCoords.map((p) => [p.lat, p.lon]);
+    state.watch.itineraryLine = L.polyline(latlngs, {
+      color: '#a855f7', weight: 4, opacity: 0.45, dashArray: '2,10', pane: 'routePane',
+    }).addTo(map);
+    if (trip.itineraryLegs && trip.itineraryLegs.length) {
+      trip.itineraryLegs.forEach((leg, i) => {
+        const isFinal = i === trip.itineraryLegs.length - 1;
+        const icon = L.divIcon({
+          className: 'event-marker',
+          html: `<div class="${isFinal ? 'final-marker-icon' : 'overnight-marker-icon'}">${isFinal ? '🏁' : '🌙'}</div>`,
+          iconSize: [28, 28], iconAnchor: [14, 25],
+        });
+        const label = leg.label || leg.destLabel || (isFinal ? 'Final destination' : `Overnight stop ${i + 1}`);
+        const marker = L.marker([leg.lat, leg.lon], { icon })
+          .bindPopup(`${isFinal ? '🏁' : '🌙'} ${escapeHtml(label)}${isFinal ? '' : ' — overnight stop'}`)
+          .addTo(map);
+        state.watch.overnightMarkers.push(marker);
+      });
+    }
+    state.watch.itineraryDrawn = true;
   }
 
   // Redraws the route line not just the first time, but whenever the
@@ -4259,6 +4617,31 @@ function renderWatchTrip() {
     status += (ageSec > 120 ? ' — last known position may be stale' : '');
   }
   renderWatchStatus(status);
+}
+
+// Populates the "🗺️ Trip Plan" panel on the watch screen (#watchItineraryPanel
+// / #watchItineraryList) with every day of a multi-day trip plan — hidden
+// entirely for an ordinary single-leg shared trip (trip.itineraryLegs unset
+// or just one entry), same "just looks like it always has" approach as the
+// legLabel title handling above.
+function renderWatchItinerary(trip) {
+  const panel = document.getElementById('watchItineraryPanel');
+  const list = document.getElementById('watchItineraryList');
+  if (!panel || !list) return;
+  if (!trip.itineraryLegs || trip.itineraryLegs.length < 2) {
+    panel.classList.add('hidden');
+    return;
+  }
+  panel.classList.remove('hidden');
+  const currentIdx = trip.currentLegIndex || 0;
+  list.innerHTML = trip.itineraryLegs.map((leg, i) => {
+    const label = leg.label || leg.destLabel || ('Day ' + (i + 1));
+    const marker = i === currentIdx ? '📍' : (i < currentIdx ? '✅' : (i + 1));
+    return `<div class="leg-item${i === currentIdx ? ' leg-item-current' : ''}">
+      <span class="leg-item-num">${marker}</span>
+      <span class="leg-item-label">${escapeHtml(label)}</span>
+    </div>`;
+  }).join('');
 }
 
 function renderWatchEvents(events) {
@@ -4541,6 +4924,7 @@ function wireSetupScreen() {
       onLocationUpdate();
       renderSharePanel();
       requestNavWakeLock();
+      updateEndLegButtonLabel(); // resets to the plain wording — state.itinerary is null outside a trip plan
       const choiceMsg = describeRouteChoice(route);
       if (choiceMsg) toast(choiceMsg, 6000);
     } catch (e) {
@@ -4551,7 +4935,12 @@ function wireSetupScreen() {
     }
   });
 
+  document.getElementById('addStopBtn').addEventListener('click', addStopToPlan);
+  document.getElementById('clearTripPlanBtn').addEventListener('click', clearTripPlan);
+  document.getElementById('calcTripPlanBtn').addEventListener('click', calculateTripPlan);
+
   renderLegsList();
+  renderTripPlanUI();
   refreshCalcButton();
 }
 
@@ -4686,6 +5075,23 @@ function wireVoiceControls() {
 
 function wireEndLeg() {
   document.getElementById('endLegBtn').addEventListener('click', () => {
+    const it = state.itinerary;
+    const hasMoreLegs = it && it.currentLegIdx + 1 < it.legs.length;
+
+    // Mid-trip-plan, with more days already calculated: this button means
+    // "I'm done driving for today," not "end the whole trip" — hand off to
+    // the next day instead, keeping the same share link the whole way
+    // through. See advanceToNextLeg().
+    if (hasMoreLegs) {
+      const next = it.legs[it.currentLegIdx + 1];
+      const nextName = next.label || next.destLabel;
+      const msg = `End Day ${it.currentLegIdx + 1} and move on to Day ${it.currentLegIdx + 2} (${nextName})?` +
+        (state.share.active ? '\n\nYour shared link stays the same — family will just see you\'re taking a break until you\'re back on the road.' : '');
+      if (!window.confirm(msg)) return;
+      advanceToNextLeg();
+      return;
+    }
+
     // Confirm first — same reasoning as stopSharingBtn above: this ends
     // live sharing too (if it's on), and a stray tap here (reaching for
     // something else, a bump in the road) shouldn't be able to end a leg
@@ -4696,6 +5102,7 @@ function wireEndLeg() {
     if (!window.confirm(msg)) return;
     if (state.share.active) stopSharing();
     state.route = null;
+    state.itinerary = null;
     state.currentLegLabel = null;
     releaseNavWakeLock();
     clearActiveLeg(); // the leg is genuinely done — nothing to offer resuming later
@@ -4704,6 +5111,7 @@ function wireEndLeg() {
     document.getElementById('destInput').value = '';
     document.getElementById('legLabelInput').value = '';
     state.pendingDest = null;
+    updateEndLegButtonLabel();
     renderLegsList();
     refreshCalcButton();
     checkForActiveLeg(); // hide the resume banner, if it was showing
@@ -4825,6 +5233,7 @@ function wireMyTripsAdd() {
 async function resumeActiveLeg(snap) {
   state.route = snap.route;
   state.currentLegLabel = snap.legLabel || null;
+  state.itinerary = snap.itinerary || null;
   state.currentStepIndex = 0;
   nearestIndexCache = 0; // fresh route array — see performReroute()'s comment
   state.lastRerouteAt = 0;
@@ -4851,6 +5260,7 @@ async function resumeActiveLeg(snap) {
   drawRoute();
   onLocationUpdate();
   requestNavWakeLock();
+  updateEndLegButtonLabel();
 
   if (snap.pin) {
     await resumeSharing(snap.pin);
@@ -4931,6 +5341,33 @@ const HELP_TOPICS = {
         and to tap-anywhere-for-ETA.</li>
       </ul>
       <p>Tap the <b>?</b> next to any field above for more detail on that one.</p>`,
+  },
+  'trip-plan': {
+    title: 'Multi-day Trip Plan',
+    html: `
+      <p>Planning several overnight stops? Use this to line up the whole
+      trip in one sitting, before you drive, instead of planning one leg a
+      day.</p>
+      <ul>
+        <li>Set a <b>Destination</b> above for the first overnight stop,
+        then tap <b>➕ Add as a stop</b> instead of Calculate Route. Repeat
+        for each additional day — each new stop automatically starts from
+        the one before it.</li>
+        <li>The list below shows every day queued up so far; tap 🗑 on any
+        row to remove it.</li>
+        <li>Once every day is queued, tap <b>Calculate & Start Trip Plan</b>.
+        This works out the route for all of them and starts you on Day 1 —
+        the other days wait until you get there.</li>
+        <li>If you start sharing, family sees the <b>entire</b> planned
+        route and every overnight stop right away, not just today's — see
+        their side's Trip Plan help for what that looks like.</li>
+        <li>At the end of each day, use <b>End Day / Continue</b> (the End
+        Leg button relabels itself once a plan is running) to hand off to
+        the next day under the exact same share link — no new passcode
+        needed.</li>
+        <li>Changed your mind? <b>Clear</b> empties the queued list so you
+        can start over, or just plan a single leg as usual instead.</li>
+      </ul>`,
   },
   'resume-banner': {
     title: 'Resume Trip banner',
@@ -5270,6 +5707,29 @@ const HELP_TOPICS = {
         position.</li>
         <li><b>📝 Trip Log</b> below the map lists every photo, video, and
         comment they've added, newest first.</li>
+      </ul>`,
+  },
+  'watch-itinerary': {
+    title: 'Trip Plan',
+    html: `
+      <p>Shows up only when the traveler built this as a multi-day <b>Trip
+      Plan</b> (several overnight stops under one shared link) instead of a
+      single leg — for an ordinary one-day trip this panel just isn't
+      there.</p>
+      <ul>
+        <li>Lists every planned day, with 📍 marking the one currently being
+        driven and ✅ marking days already finished.</li>
+        <li>The map shows a lighter, dashed purple line for the whole
+        planned trip, underneath the brighter solid line for today's
+        driving, plus a 🌙 marker at each overnight stop and a 🏁 marker at
+        the final destination — tap any marker for its name.</li>
+        <li>That overview line and its markers are a snapshot from when the
+        traveler calculated their plan — they won't shift if the traveler
+        reroutes during today's drive (today's solid line still will).</li>
+        <li>At the end of each day the traveler taps <b>End Day / Continue</b>
+        rather than fully stopping — the same share link carries over to the
+        next day automatically, so you'll keep watching without needing
+        anything new from them.</li>
       </ul>`,
   },
   'map-watch': {
