@@ -246,6 +246,31 @@ avoids that.
   auto-lock on detected motion) doesn't dim or lock mid-drive. Turns on
   automatically the moment you calculate or resume a route and turns back
   off when you end the leg, so it's not draining battery at other times.
+- **Multi-day Trip Plan** (optional) — on the planning screen, instead of
+  tapping **Calculate Route** for just one leg, set a destination and tap
+  **➕ Add as a stop, plan another day** to queue up your first overnight
+  stop, then repeat for each additional day — each new stop automatically
+  starts from the one before it, so you're just adding destinations one
+  after another. The list under it shows every day queued so far (🗑 to
+  remove one). Once the whole trip is queued, tap **🚀 Calculate & Start
+  Trip Plan** — it calculates every day's route up front and gets you
+  driving on Day 1; the rest wait until you reach them. If you're sharing,
+  family sees the **entire** planned route and an overnight marker (🌙) at
+  every stop plus a finish marker (🏁) at the end, right from the moment
+  they open the link — not just revealed a day at a time — drawn as a
+  lighter dashed line underneath your solid, brighter "today" route so both
+  stay easy to tell apart. At the end of each day, the leg button relabels
+  itself to **🏁 End Day X / Continue to Day X+1** — tap it (same
+  confirmation prompt as always) to hand off to the next day under the
+  *exact same* share link, no new passcode needed; family briefly sees a
+  "taking a break" message until you're moving again, same as an ordinary
+  overnight pause. One thing to know: the full-trip overview line and its
+  markers are a snapshot from when you tapped Calculate & Start Trip Plan —
+  if you reroute mid-drive on whatever day you're currently on, that day's
+  own route line updates live as always, but the lighter overview line
+  behind it won't reflect the reroute. Don't need any of this? Plan a
+  single leg the normal way below and this section just stays out of the
+  way.
 - **Share & Trip Log** (optional, needs one-time setup — see section 7) —
   tap **Start Sharing This Leg** to get a one-tap link (and a 6-digit
   passcode as a backup) to give to family. Tap **📤 Share Link** to send it
@@ -945,6 +970,13 @@ avoids that.
   spottier on Safari (and can require an actual network connection to
   transcribe, not guaranteed on the road). Where it's unavailable, replying
   falls back to a one-line text prompt.
+- A Multi-day Trip Plan's full-trip overview line/markers shown to family
+  are a snapshot from when you calculated the plan, not live — a reroute
+  during whichever day you're actually driving updates that day's own
+  route line as always, but won't reshape the lighter overview line behind
+  it. Each day is still calculated in full ahead of time (not just the
+  next one), so this only affects the family-facing overview picture, not
+  your own turn-by-turn.
 
 ## 6. Running it on a PC instead of a phone (optional)
 
