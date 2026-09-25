@@ -644,6 +644,20 @@ avoids that.
   phones block web page audio when the hardware mute switch is on).
 - **Routing/geocoding errors mentioning your API key** — double-check you
   pasted the whole key with no extra spaces in Settings.
+- **"Couldn't find a drivable road near your starting point / that
+  destination"** — as of v2026.09.20.4, this replaces a raw, hard-to-read
+  OpenRouteService error (something like `Routing failed (404): {"error":
+  {"code":2010,"message":"Could not find routable point within a radius of
+  350.0 meters…`) with a plain explanation of the same thing: that pin
+  landed more than about 350 meters from anything the map data considers a
+  drivable road — usually private property, an unmapped driveway or forest
+  road, or open land with no through-road nearby. Drag the pin (on the
+  fine-tune map that appears after picking a search result) onto the
+  nearest real road, or search for a slightly nearby address instead. This
+  is different from — and comes up less often than — the 🏠 "route ends
+  short of your exact pin" banner mentioned above, which is for a smaller
+  gap (up to ~500 feet) that still lets a route calculate, just not all the
+  way to the exact spot.
 - **Search only offers a street/city match, not the exact address** — the
   free map data behind search doesn't have every U.S. address on file,
   especially newer or rural ones. Pick the closest match and use the
@@ -697,6 +711,29 @@ avoids that.
 - **"📤 Share Link" doesn't do anything, or there's no share popup** — some
   browsers (mostly on desktop) don't offer that share-sheet feature; tap
   **📋 Copy** instead and paste the link into your text/email app by hand.
+- **Tapping "Start Sharing" (or Resume Trip's automatic reconnect) gets
+  stuck on "Connecting…" and never finishes or shows an error** — fixed as
+  of v2026.09.20.4. Before that fix, a connection hiccup (a satellite dish
+  mid-handover, a brief dead zone) could leave that request neither
+  succeeding nor failing, so there was nothing to catch and show — and
+  because that failed attempt got remembered, even a full reconnect
+  afterward (restarting Starlink, waiting for signal) couldn't get a fresh
+  try without reloading the page. It now gives up after 20 seconds with a
+  plain "Couldn't connect — check your signal and try again" message and
+  clears that attempt so the very next tap starts clean.
+- **The app crashed outright after several hours of active sharing** —
+  fixed as of v2026.09.20.4. The Trip Log (photos, videos, comments, and
+  the automatic state/city/time-zone-crossing notes) had no upper limit —
+  every single new one re-rendered the *entire* history, so a long day
+  (especially one with several photos, each fairly large before
+  compression) could quietly build up more and more in memory the whole
+  time you were sharing, on both your screen and every viewer's, with
+  nothing ever freed. Eventually something ordinary — even just zooming
+  the map — could be the last straw that ran the browser tab out of
+  memory. The live Trip Log panel now only holds/shows the most recent 40
+  entries at a time (a small note says so once you pass that); nothing
+  is deleted from Firestore, so the full history is always still there
+  under the same link, just not all loaded into memory continuously.
 - **Accidentally hit Stop Sharing or End This Leg** — as of v2026.09.20.1,
   both buttons now ask "Are you sure?" before doing anything, specifically
   so a stray tap (a bump in the road, reaching for the camera button while
