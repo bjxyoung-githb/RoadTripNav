@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.20.5';
+const APP_VERSION = 'v2026.09.20.6';
 
 /* ============================== UTILITIES ============================== */
 
@@ -2364,6 +2364,20 @@ function initFirebase() {
       const app = (firebase.apps && firebase.apps.length) ? firebase.app() : firebase.initializeApp(window.FIREBASE_CONFIG);
       const auth = firebase.auth(app);
       const db = firebase.firestore(app);
+      // Firestore's default connection is a long-lived, streaming one
+      // (WebChannel over HTTP/2) — ordinary page loads and API calls (like
+      // OpenRouteService's) don't need anything like it, which is exactly
+      // why "other sites work fine" doesn't rule this out. Some networks
+      // (corporate proxies, some VPNs, and some satellite/cellular
+      // connections — Starlink's routing/NAT among them, based on reports
+      // from other users) silently swallow that connection instead of
+      // rejecting it outright, so it just hangs forever with no error to
+      // show. This tells Firestore to detect that and fall back to plain,
+      // ordinary HTTPS long-polling automatically when needed, which works
+      // through those same networks fine — only applies to the very first
+      // time this runs since it has to happen before any other Firestore
+      // call, which is why it lives here in initFirebase() and nowhere else.
+      try { db.settings({ experimentalAutoDetectLongPolling: true }); } catch (e) { /* already configured — fine, ignore */ }
       const timer = setTimeout(() => {
         reject(new Error("Couldn't connect — check your signal and try again."));
       }, FIREBASE_CONNECT_TIMEOUT_MS);
