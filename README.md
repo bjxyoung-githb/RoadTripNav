@@ -1054,6 +1054,24 @@ avoids that.
   exact same offset as Pacific. The alert is telling you the clock
   genuinely doesn't need to move right now, not misdetecting the
   crossing.
+- **A watcher who tapped the shared link briefly saw your trip-setup
+  screen instead of your live map** (v2026.09.25.1) — the app does route
+  a `?watch=123456` link straight to the map; the gap was on a slow or
+  spotty connection, where the driver's setup form (the page's plain,
+  unhidden default HTML) could sit fully visible for however long the
+  Leaflet/Firebase scripts near the bottom of the page took to finish
+  loading before the app's own code ever ran to redirect them. Now a
+  simple "Loading your family's trip…" cover shows immediately instead,
+  before those scripts even start, so nobody following a link on a weak
+  signal lands on your setup form.
+- **The version number doesn't match today's date** — the "vYYYY.MM.DD.N"
+  in the version number isn't tied to the calendar automatically; I set it
+  by hand with each release, usually to the date I actually ship it,
+  bumping just the last number (`.N`) for more than one release the same
+  day. It can drift behind the real date if several fixes land back to
+  back under one date's number (as happened during a multi-day Firebase
+  troubleshooting stretch) — it's not a sign anything's wrong, just when I
+  last updated the date part.
 
 ## 5. Known limitations (by design, given free/no-cost data sources)
 
