@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.20.3';
+const APP_VERSION = 'v2026.09.20.4';
 
 /* ============================== UTILITIES ============================== */
 
@@ -455,6 +455,29 @@ async function orsGeocodeStructured(text, focus) {
   if (!res.ok) return [];
   const json = await res.json();
   return (json.features || []).map(mapGeocodeFeature);
+}
+
+// Turns OpenRouteService's raw HTTP-error JSON into something a driver can
+// actually act on. Error code 2010 ("Could not find routable point within a
+// radius of 350.0 meters of specified coordinate N…") specifically means
+// that pin sits too far from anything ORS considers a drivable road — most
+// often a pin dropped on private property, an unmapped driveway/forest
+// road, or open land with no through-road nearby. This isn't a bug so much
+// as a data-coverage gap (the milder version of the same limitation is the
+// 🏠 "route ends short of your exact pin" banner elsewhere in the app) —
+// but the raw JSON error is meaningless to read on its own, so this at
+// least says which point it was (start or destination — orsRoute() always
+// sends them in that order, coordinate 0 then 1) and what to try instead.
+function friendlyRouteError(e, start, dest) {
+  const msg = (e && e.message) || '';
+  const m = /coordinate (\d+)/.exec(msg);
+  if (m && /Could not find routable point/i.test(msg)) {
+    const isStart = m[1] === '0';
+    const point = isStart ? start : dest;
+    const label = point && point.label ? point.label : (isStart ? 'your starting point' : 'that destination');
+    return `Couldn't find a drivable road near ${isStart ? 'your starting point' : label} — it's likely on private property, an unmapped road, or open land with no through-road nearby. Try dragging the pin onto the nearest real road on the fine-tune map, or search for a slightly different address.`;
+  }
+  return msg;
 }
 
 async function orsRoute(start, end, opts) {
@@ -947,12 +970,17 @@ async function calculateTripPlan() {
   if (!firstStart) { errEl.textContent = 'Set a starting point first.'; return; }
   calcPlanBtn.disabled = true;
   const origText = calcPlanBtn.textContent;
+  // Tracks whichever start/destination pair is currently being calculated,
+  // so if calcRouteWithPreference() throws, the catch block below can still
+  // say which day/pin it was about — see friendlyRouteError().
+  let attemptStart = firstStart, attemptDest = null;
   try {
     const legs = [];
     let legStart = firstStart;
     for (let i = 0; i < stops.length; i++) {
       calcPlanBtn.textContent = `Calculating day ${i + 1} of ${stops.length}…`;
       const dest = { lat: stops[i].destLat, lon: stops[i].destLon, label: stops[i].destLabel };
+      attemptStart = legStart; attemptDest = dest;
       const route = await calcRouteWithPreference(legStart, dest);
       route.destForReroute = dest;
       legs.push({ label: stops[i].label, destLabel: stops[i].destLabel, destLat: stops[i].destLat, destLon: stops[i].destLon, route });
@@ -994,7 +1022,7 @@ async function calculateTripPlan() {
     updateEndLegButtonLabel();
     toast(`Trip plan ready — ${legs.length} day${legs.length > 1 ? 's' : ''}. Starting Day 1${first.label ? ': ' + first.label : ''}.`, 7000);
   } catch (e) {
-    errEl.textContent = e.message;
+    errEl.textContent = friendlyRouteError(e, attemptStart, attemptDest);
   } finally {
     calcPlanBtn.disabled = false;
     calcPlanBtn.textContent = origText;
@@ -2301,6 +2329,14 @@ function firebaseConfigured() {
   return !!(c && c.apiKey && !String(c.apiKey).startsWith('YOUR_'));
 }
 
+// How long to wait for Firebase sign-in before giving up and letting the
+// caller (startSharing()/resumeSharing()/etc.) show a retryable error,
+// instead of leaving the UI stuck on "Connecting…" forever. This matters
+// most on a spotty connection (e.g. a satellite dish mid-handover) where a
+// request can sit neither succeeding nor failing for a long time — without
+// this, there's simply no error to catch and show.
+const FIREBASE_CONNECT_TIMEOUT_MS = 20000;
+
 let fbInitPromise = null;
 function initFirebase() {
   if (fbInitPromise) return fbInitPromise;
@@ -2311,11 +2347,22 @@ function initFirebase() {
       const app = (firebase.apps && firebase.apps.length) ? firebase.app() : firebase.initializeApp(window.FIREBASE_CONFIG);
       const auth = firebase.auth(app);
       const db = firebase.firestore(app);
+      const timer = setTimeout(() => {
+        reject(new Error("Couldn't connect — check your signal and try again."));
+      }, FIREBASE_CONNECT_TIMEOUT_MS);
       auth.onAuthStateChanged((user) => {
-        if (user) { state.fb = { app, auth, db, uid: user.uid }; resolve(state.fb); }
+        if (user) { clearTimeout(timer); state.fb = { app, auth, db, uid: user.uid }; resolve(state.fb); }
       });
-      auth.signInAnonymously().catch((e) => reject(new Error('Firebase sign-in failed: ' + e.message)));
+      auth.signInAnonymously().catch((e) => { clearTimeout(timer); reject(new Error('Firebase sign-in failed: ' + e.message)); });
     } catch (e) { reject(e); }
+  }).catch((e) => {
+    // Don't let one failed/timed-out attempt poison every later retry —
+    // without this, tapping Start Sharing again after a connection hiccup
+    // would just keep re-returning this same already-failed promise
+    // forever, making a fresh attempt (even after the connection recovers)
+    // impossible without a full page reload.
+    fbInitPromise = null;
+    throw e;
   });
   return fbInitPromise;
 }
@@ -2576,10 +2623,26 @@ function subscribeViewerCount(pin) {
     }, () => { /* best effort — leave last known count showing */ });
 }
 
+// Caps how many photos/videos/comments/auto-generated markers this live
+// listener holds and re-renders at once. Without this, a long day (or a
+// multi-day Trip Plan) could accumulate dozens of events — several of them
+// full-size photos, each up to ~700KB of base64 text — and every single
+// new one triggered a full re-render of every past one, on both the
+// driver's own screen and every viewer's. That unbounded growth, sitting
+// in memory for the entire drive, is what led to a phone's browser tab
+// running out of memory and crashing after several hours of sharing (most
+// likely to show up as a crash on an unrelated action, like zooming the
+// map, since that's just whatever finally needed the last bit of memory).
+// Nothing is deleted from Firestore — this only limits what's held/shown
+// live in the auto-updating Trip Log; the full history is always still
+// there under the same passcode/link.
+const EVENTS_LIVE_LIMIT = 40;
+
 function subscribeOwnEvents(pin) {
   if (state.share.unsubEvents) state.share.unsubEvents();
   state.share.unsubEvents = state.fb.db.collection('trips').doc(pin).collection('events')
     .orderBy('createdAt', 'desc')
+    .limit(EVENTS_LIVE_LIMIT)
     .onSnapshot((snap) => {
       const events = [];
       snap.forEach((doc) => events.push({ id: doc.id, ...doc.data() }));
@@ -3738,7 +3801,9 @@ function renderSharePanel() {
   const preserved = captureShareInputState();
 
   const eventsHtml = sh.events.length
-    ? sh.events.map(renderEventItem).join('')
+    ? sh.events.map(renderEventItem).join('') + (sh.events.length >= EVENTS_LIVE_LIMIT
+        ? `<div class="muted" style="padding:8px 0;font-size:12px;">Showing the most recent ${EVENTS_LIVE_LIMIT} — older photos/comments still exist, just not listed here.</div>`
+        : '')
     : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
   const shareUrl = buildShareUrl(sh.pin);
   const tripTitleHtml = state.currentLegLabel
@@ -4139,6 +4204,7 @@ async function watchTrip(pin) {
 
     state.watch.unsubEvents = db.collection('trips').doc(pin).collection('events')
       .orderBy('createdAt', 'desc')
+      .limit(EVENTS_LIVE_LIMIT)
       .onSnapshot((qs) => {
         const events = [];
         qs.forEach((d) => events.push({ id: d.id, ...d.data() }));
@@ -4648,7 +4714,9 @@ function renderWatchEvents(events) {
   const el = document.getElementById('watchEvents');
   if (!el) return;
   el.innerHTML = events.length
-    ? events.map(renderEventItem).join('')
+    ? events.map(renderEventItem).join('') + (events.length >= EVENTS_LIVE_LIMIT
+        ? `<div class="muted" style="padding:8px 0;font-size:12px;">Showing the most recent ${EVENTS_LIVE_LIMIT} — older photos/comments still exist, just not listed here.</div>`
+        : '')
     : '<div class="muted" style="padding:8px 0;">No photos, videos, or comments yet.</div>';
 
   const map = state.watch.map;
@@ -4928,7 +4996,7 @@ function wireSetupScreen() {
       const choiceMsg = describeRouteChoice(route);
       if (choiceMsg) toast(choiceMsg, 6000);
     } catch (e) {
-      errEl.textContent = e.message;
+      errEl.textContent = friendlyRouteError(e, start, dest);
     } finally {
       calcBtn.disabled = false;
       calcBtn.textContent = 'Calculate Route';
