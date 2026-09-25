@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.20.6';
+const APP_VERSION = 'v2026.09.21.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -259,6 +259,13 @@ const state = {
   loc: null,             // latest {lat,lon,accuracy,heading,speed,updatedAt} from this device's own GPS
   geoWatchId: null,
   manualStart: null,    // {lat,lon,label} if user set a manual start
+  // True from the moment "Set manually" is tapped until a result is
+  // actually picked (or coordinates/a Google Maps link is recognized) —
+  // see updateSetupStartLabel(). Needed because manualStart itself is
+  // still null during that in-between window (nothing's been chosen yet),
+  // so without this flag, a live GPS fix arriving while you're mid-typing
+  // your address would overwrite the field's text mid-keystroke.
+  manualStartEditing: false,
   pendingDest: null,    // {lat,lon,label} chosen from search results before route calc
   // Multi-day trip plan being BUILT on the setup screen, before it's
   // calculated — see addStopToPlan()/renderTripPlanUI(). Each entry:
@@ -314,7 +321,7 @@ const state = {
   // moment of crossing.
   tzTrack: { confirmed: null, candidate: null, candidateMiles: 0, lastLoc: null },
   fb: null, // {app, auth, db, uid} once Firebase is configured and signed in
-  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false },
+  share: { active: false, pin: null, ownerUid: null, unsubEvents: null, unsubViewers: null, unsubMessages: null, viewerCount: 0, events: [], messages: [], messagesLoaded: false, lastPushAt: 0, lastPushLoc: null, paused: false, pausedAt: 0, pausedLoc: null, routeDirty: false, lastReplySent: null }, // lastReplySent: {toName,text,sentAt} — see sendDriverReply()/renderViewerMessages()
   watch: { pin: null, trip: null, events: [], unsubTrip: null, unsubEvents: null, presenceInterval: null, presenceUid: null, map: null, routeLine: null, liveMarker: null, eventMarkers: {}, weatherFetchedAt: 0, weatherLoc: null, peaksFetchedAt: 0, peaksLoc: null, fullscreen: false, etaTapMarker: null, unsubReplies: null, replies: [], repliesLoaded: false, itineraryLine: null, overnightMarkers: [], itineraryDrawn: false },
 };
 
@@ -399,6 +406,27 @@ function parseGoogleMapsUrl(text) {
   return { lat, lon, label };
 }
 
+// Words that don't help tell one street from another — directionals and
+// the common street-type suffixes — so they're ignored when checking
+// whether a geocoded result's label actually mentions the street someone
+// typed. Skipping these also sidesteps false negatives from OSM
+// abbreviating them inconsistently ("North" vs "N", "Trail" vs "Trl").
+const STREET_MATCH_IGNORE_WORDS = new Set([
+  'n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw', 'north', 'south', 'east', 'west',
+  'st', 'street', 'ave', 'avenue', 'rd', 'road', 'dr', 'drive', 'ln', 'lane',
+  'trail', 'trl', 'way', 'wy', 'blvd', 'boulevard', 'ct', 'court', 'pl', 'place',
+  'cir', 'circle', 'pkwy', 'parkway', 'hwy', 'highway', 'loop', 'pass', 'path', 'run',
+]);
+
+function streetHasDistinctiveMatch(streetText, resultLabel) {
+  if (!streetText || !resultLabel) return true; // nothing to check against — don't block on it
+  const words = streetText.toLowerCase().replace(/[.,]/g, '').split(/\s+/)
+    .filter((w) => w && !STREET_MATCH_IGNORE_WORDS.has(w) && !/^\d+$/.test(w));
+  if (!words.length) return true; // e.g. "N Main St" — no distinctive word left to check
+  const label = resultLabel.toLowerCase();
+  return words.some((w) => label.includes(w));
+}
+
 async function orsGeocode(text) {
   const key = state.settings.orsKey;
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
@@ -411,22 +439,44 @@ async function orsGeocode(text) {
   let results = (json.features || []).map(mapGeocodeFeature);
 
   // If the query looks like it includes a street number but nothing at
-  // address-level precision came back, the free-text parser may have failed
-  // to split the address correctly. Retry with a structured query, which
-  // parses each part (address/locality/region) separately and often finds
-  // an exact match the plain search missed.
+  // address-level precision came back for the ACTUAL street typed, the
+  // free-text parser may have failed to split the address correctly.
+  // Retry with a structured query, which parses each part
+  // (address/locality/region) separately and often finds an exact match
+  // the plain search missed.
+  //
+  // "came back for the actual street typed" matters: a plain 'address'-
+  // layer hit isn't necessarily the right one. When OSM/Pelias doesn't
+  // have your exact house number on your exact street, it can still
+  // return some other nearby address at full 'address' precision — same
+  // house number, wrong street entirely — badged "Exact" with nothing to
+  // suggest it's not actually a match. streetHasDistinctiveMatch() below
+  // checks the result's label actually mentions the street name (ignoring
+  // directionals like "North"/"N" and suffixes like "Trail"/"Trl", which
+  // OSM abbreviates inconsistently) before trusting an 'address' hit.
   const hasHouseNumber = /^\s*\d+\s+\S/.test(text);
-  const hasAddressHit = results.some((r) => r.layer === 'address');
+  const houseNumMatch = text.match(/^\s*\d+\s+([^,]+)/);
+  const streetText = houseNumMatch ? houseNumMatch[1] : '';
+  const isTrustworthyAddressHit = (r) => r.layer === 'address' && streetHasDistinctiveMatch(streetText, r.label);
+  const hasAddressHit = results.some(isTrustworthyAddressHit);
   if (hasHouseNumber && !hasAddressHit) {
     try {
       const structured = await orsGeocodeStructured(text, focus);
       if (structured.length) {
-        // Put any address-level structured hits first, then the rest, deduped by label.
+        // Add any new structured hits, deduped by label.
         const seen = new Set(results.map((r) => r.label));
         structured.forEach((r) => { if (!seen.has(r.label)) { results.push(r); seen.add(r.label); } });
-        results.sort((a, b) => (a.layer === 'address' ? -1 : 0) - (b.layer === 'address' ? -1 : 0));
       }
     } catch (e) { /* structured search is a best-effort extra try; ignore failures */ }
+  }
+  if (hasHouseNumber) {
+    // A trustworthy address match floats to the top; other layers
+    // (street/city/etc) come next; an 'address'-layer hit that DIDN'T
+    // match the street you typed is demoted to last — it's the case
+    // above (a wrong-street "Exact" badge), so it shouldn't outrank even
+    // an honest lower-precision result.
+    const score = (r) => (isTrustworthyAddressHit(r) ? 2 : r.layer === 'address' ? 0 : 1);
+    results.sort((a, b) => score(b) - score(a));
   }
   return results;
 }
@@ -820,7 +870,7 @@ function startRelayPolling() {
 
 function updateSetupStartLabel() {
   const startInput = document.getElementById('startInput');
-  if (state.manualStart) return; // manual overrides display already set
+  if (state.manualStart || state.manualStartEditing) return; // manual overrides display already set (or being typed right now)
   if (state.loc) {
     startInput.value = `Live GPS: ${state.loc.lat.toFixed(4)}, ${state.loc.lon.toFixed(4)}`;
   } else {
@@ -1510,7 +1560,8 @@ function startVoiceKeepAlive() {
         window.speechSynthesis.resume();
       }
     } catch (e) { /* ignore */ }
-  }, 10000);
+  }, 4000); // was 10000 — a longer message could still hit the cutoff bug (see speak()'s comment) before the first nudge ever fired
+
 }
 
 // Surfaces a voice failure instead of swallowing it silently — throttled
@@ -1523,14 +1574,61 @@ function reportVoiceFailure(detail) {
   toast('🔇 Voice guidance failed' + (detail ? ' (' + detail + ')' : '') + ' — try muting and re-enabling it in Settings.', 6000);
 }
 
+// Breaks a message into shorter, sentence-sized pieces and queues each as
+// its own utterance, rather than speaking it as one long one. Android
+// Chrome has a well-known bug where a single utterance running much past
+// ~10-15 seconds can silently cut off mid-sentence with no error fired —
+// exactly "it only speaks for a few seconds and cuts off." Several short
+// utterances queued back to back are far more reliable: each one finishes
+// well under that window, so a cut affects at most one short piece rather
+// than losing the rest of the whole message.
+const SPEECH_CHUNK_MAX_CHARS = 180;
+function splitForSpeech(text) {
+  const sentences = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
+  const chunks = [];
+  let cur = '';
+  for (const s of sentences) {
+    if (cur && (cur.length + s.length) > SPEECH_CHUNK_MAX_CHARS) { chunks.push(cur.trim()); cur = ''; }
+    cur += s;
+    if (cur.length > SPEECH_CHUNK_MAX_CHARS) { chunks.push(cur.trim()); cur = ''; }
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.length ? chunks : [text];
+}
+
+// A ~0.05-second silent WAV, played right before speaking. On some Android
+// phones, speechSynthesis alone doesn't reliably hand audio output over to
+// a connected Bluetooth car system — actually playing a bit of ordinary
+// HTMLMediaElement audio first is a known nudge that helps the OS route
+// what follows to the right output, in cases where the car stays silent
+// even though the app is clearly trying to talk. This is a best-effort
+// mitigation for an OS/Bluetooth-level quirk this app has no direct control
+// over, not a guaranteed fix — but it's silent either way, so it's harmless
+// to always run before speaking.
+let silentAudioEl = null;
+function playSilentAudioNudge() {
+  try {
+    if (!silentAudioEl) {
+      silentAudioEl = new Audio('data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA');
+      silentAudioEl.volume = 0.01;
+    }
+    silentAudioEl.currentTime = 0;
+    const p = silentAudioEl.play();
+    if (p && p.catch) p.catch(() => { /* ignore — best effort only */ });
+  } catch (e) { /* ignore */ }
+}
+
 function speak(text) {
   if (!voiceSupported() || !state.settings.voiceEnabled) return;
   try {
     window.speechSynthesis.cancel(); // don't let announcements pile up/overlap
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0;
-    u.onerror = (e) => reportVoiceFailure(e && e.error);
-    window.speechSynthesis.speak(u);
+    playSilentAudioNudge();
+    splitForSpeech(text).forEach((chunk) => {
+      const u = new SpeechSynthesisUtterance(chunk);
+      u.rate = 1.0;
+      u.onerror = (e) => reportVoiceFailure(e && e.error);
+      window.speechSynthesis.speak(u);
+    });
   } catch (e) { reportVoiceFailure(e && e.message); }
 }
 
@@ -2354,6 +2452,17 @@ function withTimeout(promise, ms, message) {
   });
 }
 
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+// A satellite connection (Starlink included) can drop packets for a second
+// or two around a routine dish handover — brief enough that a plain retry
+// a couple seconds later often just works, but long enough to fully stall
+// out a single request. Rather than making the driver notice the error and
+// tap "Start Sharing" again by hand (awkward mid-drive), the caller retries
+// automatically this many times before actually giving up and showing an
+// error with its own manual retry button.
+const SHARE_CONNECT_RETRIES = 2;
+
 let fbInitPromise = null;
 function initFirebase() {
   if (fbInitPromise) return fbInitPromise;
@@ -2379,7 +2488,7 @@ function initFirebase() {
       // call, which is why it lives here in initFirebase() and nowhere else.
       try { db.settings({ experimentalAutoDetectLongPolling: true }); } catch (e) { /* already configured — fine, ignore */ }
       const timer = setTimeout(() => {
-        reject(new Error("Couldn't connect — check your signal and try again."));
+        reject(new Error("Couldn't connect (signing in) — check your signal and try again."));
       }, FIREBASE_CONNECT_TIMEOUT_MS);
       auth.onAuthStateChanged((user) => {
         if (user) { clearTimeout(timer); state.fb = { app, auth, db, uid: user.uid }; resolve(state.fb); }
@@ -2403,7 +2512,7 @@ function randomPin() { return String(Math.floor(100000 + Math.random() * 900000)
 async function generateUniquePin(db, uid) {
   for (let i = 0; i < 6; i++) {
     const pin = randomPin();
-    const snap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
+    const snap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect (checking passcode availability) — check your signal and try again.");
     if (!snap.exists) return pin;
     const data = snap.data();
     if (data.ownerUid === uid || data.active === false) return pin; // safe to reuse
@@ -2451,58 +2560,73 @@ function escapeHtml(s) {
 async function startSharing() {
   const panel = document.getElementById('sharePanel');
   if (!state.route) { toast('Calculate a route first.', 4000); return; }
-  panel.innerHTML = '<span class="muted">Connecting…</span>';
-  try {
-    const { db, uid } = await initFirebase();
-    const pin = await generateUniquePin(db, uid);
-    const routeCoords = sampleRouteForShare(state.route, 300);
-    const payload = {
-      ownerUid: uid,
-      destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
-      legLabel: state.currentLegLabel || null,
-      startedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      active: true,
-      routeCoords,
-      totalMiles: state.route.totalDist,
-      lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: Date.now() } : null,
-    };
-    // Part of a multi-day trip plan (see calculateTripPlan()) — include the
-    // whole plan so a watcher sees every day's route and overnight stop
-    // from the moment they open the link, not just today's. itineraryLegs/
-    // itineraryFullRouteCoords/currentLegIndex are the only new fields;
-    // routeCoords above still means exactly what it always has (today's
-    // leg only), so a plain single-leg trip (state.itinerary null, the
-    // common case) writes nothing different from before this feature
-    // existed, and older shared trips with no itinerary field render on a
-    // watcher's screen exactly as they always have.
-    if (state.itinerary) {
-      payload.itineraryLegs = state.itinerary.legs.map((l) => ({ label: l.label || null, destLabel: l.destLabel, lat: l.destLat, lon: l.destLon }));
-      payload.itineraryFullRouteCoords = buildItineraryOverviewCoords(state.itinerary);
-      payload.currentLegIndex = state.itinerary.currentLegIdx;
-    }
-    await withTimeout(db.collection('trips').doc(pin).set(payload), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
 
-    state.share.active = true;
-    state.share.pin = pin;
-    state.share.ownerUid = uid;
-    state.share.lastPushAt = Date.now();
-    state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
-    state.share.viewerCount = 0;
-    state.share.paused = false;
-    state.share.pausedAt = 0;
-    state.share.pausedLoc = null;
-    rememberOwnTrip(pin, state.currentLegLabel);
-    subscribeOwnEvents(pin);
-    subscribeViewerCount(pin);
-    subscribeViewerMessages(pin);
-    persistActiveLeg(); // include this pin in the overnight-resume snapshot
-    renderSharePanel();
-    renderViewerMessages(); // shows the (empty) panel right away rather than waiting on the first snapshot
-    toast('Sharing started — passcode ' + pin, 6000);
-  } catch (e) {
-    panel.innerHTML = `<span class="muted">Couldn't start sharing: ${e.message}</span>`;
+  // Retries automatically a couple of times before actually giving up —
+  // see SHARE_CONNECT_RETRIES's comment. Each attempt still has its own
+  // 20-second timeout (see withTimeout() calls below/in generateUniquePin),
+  // so a genuinely broken connection still gives up in well under a minute
+  // total rather than hanging indefinitely.
+  let lastError = null;
+  for (let attempt = 1; attempt <= SHARE_CONNECT_RETRIES + 1; attempt++) {
+    panel.innerHTML = `<span class="muted">Connecting${attempt > 1 ? ` (retry ${attempt - 1} of ${SHARE_CONNECT_RETRIES})` : ''}…</span>`;
+    try {
+      const { db, uid } = await initFirebase();
+      const pin = await generateUniquePin(db, uid);
+      const routeCoords = sampleRouteForShare(state.route, 300);
+      const payload = {
+        ownerUid: uid,
+        destLabel: (state.route.destForReroute && state.route.destForReroute.label) || 'Destination',
+        legLabel: state.currentLegLabel || null,
+        startedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        active: true,
+        routeCoords,
+        totalMiles: state.route.totalDist,
+        lastLocation: state.loc ? { lat: state.loc.lat, lon: state.loc.lon, heading: state.loc.heading, speed: state.loc.speed, elevationFt: currentElevationFt(), updatedAt: Date.now() } : null,
+      };
+      // Part of a multi-day trip plan (see calculateTripPlan()) — include
+      // the whole plan so a watcher sees every day's route and overnight
+      // stop from the moment they open the link, not just today's.
+      // itineraryLegs/itineraryFullRouteCoords/currentLegIndex are the only
+      // new fields; routeCoords above still means exactly what it always
+      // has (today's leg only), so a plain single-leg trip (state.itinerary
+      // null, the common case) writes nothing different from before this
+      // feature existed, and older shared trips with no itinerary field
+      // render on a watcher's screen exactly as they always have.
+      if (state.itinerary) {
+        payload.itineraryLegs = state.itinerary.legs.map((l) => ({ label: l.label || null, destLabel: l.destLabel, lat: l.destLat, lon: l.destLon }));
+        payload.itineraryFullRouteCoords = buildItineraryOverviewCoords(state.itinerary);
+        payload.currentLegIndex = state.itinerary.currentLegIdx;
+      }
+      await withTimeout(db.collection('trips').doc(pin).set(payload), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect (saving trip) — check your signal and try again.");
+
+      state.share.active = true;
+      state.share.pin = pin;
+      state.share.ownerUid = uid;
+      state.share.lastPushAt = Date.now();
+      state.share.lastPushLoc = state.loc ? { lat: state.loc.lat, lon: state.loc.lon } : null;
+      state.share.viewerCount = 0;
+      state.share.paused = false;
+      state.share.pausedAt = 0;
+      state.share.pausedLoc = null;
+      rememberOwnTrip(pin, state.currentLegLabel);
+      subscribeOwnEvents(pin);
+      subscribeViewerCount(pin);
+      subscribeViewerMessages(pin);
+      persistActiveLeg(); // include this pin in the overnight-resume snapshot
+      renderSharePanel();
+      renderViewerMessages(); // shows the (empty) panel right away rather than waiting on the first snapshot
+      toast('Sharing started — passcode ' + pin, 6000);
+      return;
+    } catch (e) {
+      lastError = e;
+      if (attempt <= SHARE_CONNECT_RETRIES) { await sleep(2500); continue; }
+    }
   }
+  panel.innerHTML = `<span class="muted">Couldn't start sharing after ${SHARE_CONNECT_RETRIES + 1} tries: ${lastError.message}</span>
+    <button id="retryStartSharingBtn" class="ghost-btn small" style="margin-top:10px;">Try Again</button>`;
+  const retryBtn = document.getElementById('retryStartSharingBtn');
+  if (retryBtn) retryBtn.onclick = startSharing;
 }
 
 async function stopSharing() {
@@ -2731,22 +2855,31 @@ function renderViewerMessages() {
   if (!panel || !list) return;
   if (!state.share.active) { panel.classList.add('hidden'); return; }
   panel.classList.remove('hidden');
+  // Sticks around until the next reply replaces it (see sendDriverReply())
+  // rather than a toast that's gone in a few seconds — enough time to
+  // actually check the transcription made sense whenever's convenient.
+  const lr = state.share.lastReplySent;
+  const lastReplyHtml = lr
+    ? `<div class="viewer-message viewer-reply-sent">
+        <div class="viewer-message-meta">✅ You replied to ${escapeHtml(lr.toName)} · ${new Date(lr.sentAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+        <div class="viewer-message-text">${escapeHtml(lr.text)}</div>
+      </div>`
+    : '';
   const msgs = state.share.messages;
-  if (!msgs.length) {
-    list.innerHTML = '<div class="muted viewer-message-empty">No messages yet.</div>';
-    return;
-  }
-  list.innerHTML = msgs.slice().reverse().slice(0, 30).map((m) => {
-    const when = new Date(m.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-    const replyBtn = m.senderUid
-      ? `<button class="reply-btn" data-uid="${escapeHtml(m.senderUid)}" data-name="${escapeHtml(m.senderName)}">🎤 Reply</button>`
-      : ''; // older messages sent before senderUid was recorded have no one to target
-    return `<div class="viewer-message">
-      <div class="viewer-message-meta"><b>${escapeHtml(m.senderName)}</b> · ${when}</div>
-      <div class="viewer-message-text">${escapeHtml(m.text)}</div>
-      ${replyBtn}
-    </div>`;
-  }).join('');
+  const msgsHtml = msgs.length
+    ? msgs.slice().reverse().slice(0, 30).map((m) => {
+        const when = new Date(m.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        const replyBtn = m.senderUid
+          ? `<button class="reply-btn" data-uid="${escapeHtml(m.senderUid)}" data-name="${escapeHtml(m.senderName)}">🎤 Reply</button>`
+          : ''; // older messages sent before senderUid was recorded have no one to target
+        return `<div class="viewer-message">
+          <div class="viewer-message-meta"><b>${escapeHtml(m.senderName)}</b> · ${when}</div>
+          <div class="viewer-message-text">${escapeHtml(m.text)}</div>
+          ${replyBtn}
+        </div>`;
+      }).join('')
+    : '<div class="muted viewer-message-empty">No messages yet.</div>';
+  list.innerHTML = lastReplyHtml + msgsHtml;
 }
 
 // Reads an incoming message aloud — but speak() always cancels whatever's
@@ -2857,6 +2990,14 @@ async function sendDriverReply(toUid, toName, text) {
     });
     speak(`Reply sent to ${toName}.`); // audible confirmation — no need to glance at the screen
     toast(`Reply sent to ${toName}: "${text}"`, 5000);
+    // Also shown persistently in the Messages from Family panel (see
+    // renderViewerMessages()) — the toast alone disappears in a few
+    // seconds, not always enough time to actually glance over and check
+    // the transcription made sense while driving. This sticks around
+    // until the next reply replaces it, so it can be checked whenever's
+    // convenient instead of needing to catch it in that narrow window.
+    state.share.lastReplySent = { toName: toName || 'Family', text, sentAt: Date.now() };
+    renderViewerMessages();
   } catch (e) {
     toast("Couldn't send reply: " + friendlySendErrorMessage(e), 6000);
   }
@@ -4927,6 +5068,7 @@ function wireSetupScreen() {
       Array.from(startResults.children).forEach((child, i) => {
         child.onclick = () => {
           state.manualStart = results[i];
+          state.manualStartEditing = false;
           startInput.value = results[i].label;
           startResults.innerHTML = '';
           refreshCalcButton();
@@ -4943,6 +5085,7 @@ function wireSetupScreen() {
 
   manualStartBtn.addEventListener('click', () => {
     state.manualStart = null;
+    state.manualStartEditing = true; // blocks GPS fixes from overwriting the field while typing — see updateSetupStartLabel()
     startInput.disabled = false;
     startInput.value = '';
     startInput.placeholder = 'Type a starting address…';
@@ -4954,6 +5097,7 @@ function wireSetupScreen() {
     const coords = parseLatLon(e.target.value);
     if (coords) {
       state.manualStart = { lat: coords.lat, lon: coords.lon, label: `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` };
+      state.manualStartEditing = false;
       startResults.innerHTML = `<div class="result-item selected">📍 Using coordinates ${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)} — drag the pin below to fine-tune if needed.</div>`;
       refreshCalcButton();
       ensureFineTuneMap('start', coords.lat, coords.lon, (lat, lon) => {
@@ -4969,6 +5113,7 @@ function wireSetupScreen() {
         return;
       }
       state.manualStart = { lat: gmaps.lat, lon: gmaps.lon, label: gmaps.label };
+      state.manualStartEditing = false;
       startResults.innerHTML = `<div class="result-item selected">📍 ${escapeHtml(gmaps.label)} (from Google Maps link) — drag the pin below to fine-tune if needed.</div>`;
       refreshCalcButton();
       ensureFineTuneMap('start', gmaps.lat, gmaps.lon, (lat, lon) => {
@@ -5210,6 +5355,16 @@ function wireEndLeg() {
     document.getElementById('destInput').value = '';
     document.getElementById('legLabelInput').value = '';
     state.pendingDest = null;
+    // Reset back to live GPS for the next leg — otherwise a manual start
+    // set once (e.g. planning tonight's leg from a hotel) would silently
+    // keep being used forever, for every leg after this one too, since
+    // nothing else ever clears it. The very next leg almost always starts
+    // from wherever you physically are now, which live GPS already knows.
+    state.manualStart = null;
+    state.manualStartEditing = false;
+    const startInputEl = document.getElementById('startInput');
+    startInputEl.disabled = true;
+    updateSetupStartLabel();
     updateEndLegButtonLabel();
     renderLegsList();
     refreshCalcButton();
@@ -5373,40 +5528,48 @@ async function resumeActiveLeg(snap) {
 // that's the whole point: family never has to be sent a new link just
 // because your phone's browser got closed overnight.
 async function resumeSharing(pin) {
-  try {
-    const { db, uid } = await initFirebase();
-    const docSnap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
-    if (!docSnap.exists || docSnap.data().ownerUid !== uid) {
-      toast("Couldn't reconnect the share link from before — tap Start Sharing for a new one.", 6000);
+  // Same automatic-retry reasoning as startSharing() — see
+  // SHARE_CONNECT_RETRIES's comment.
+  let lastError = null;
+  for (let attempt = 1; attempt <= SHARE_CONNECT_RETRIES + 1; attempt++) {
+    try {
+      const { db, uid } = await initFirebase();
+      const docSnap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect (looking up trip) — check your signal and try again.");
+      if (!docSnap.exists || docSnap.data().ownerUid !== uid) {
+        toast("Couldn't reconnect the share link from before — tap Start Sharing for a new one.", 6000);
+        return;
+      }
+      await withTimeout(db.collection('trips').doc(pin).set({
+        active: true, paused: false, pausedAt: null,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect (reconnecting trip) — check your signal and try again.");
+      state.share.active = true;
+      state.share.pin = pin;
+      state.share.ownerUid = uid;
+      state.share.paused = false;
+      state.share.pausedAt = 0;
+      state.share.pausedLoc = null;
+      state.share.lastPushAt = 0;
+      state.share.lastPushLoc = null;
+      state.share.viewerCount = 0;
+      // No rememberOwnTrip() here — this is reconnecting to a pin that was
+      // already recorded when it was first created in startSharing(), not a
+      // new trip. Calling it again here (a bug fixed in v2026.09.17.6) was
+      // adding a fresh duplicate entry to "My past trip logs" every single
+      // time a leg got resumed — e.g. after any app-update reload — which is
+      // exactly why that list could balloon to several entries in one day
+      // despite only ever actually starting sharing once or twice.
+      subscribeOwnEvents(pin);
+      subscribeViewerCount(pin);
+      subscribeViewerMessages(pin);
+      renderViewerMessages();
       return;
+    } catch (e) {
+      lastError = e;
+      if (attempt <= SHARE_CONNECT_RETRIES) { await sleep(2500); continue; }
     }
-    await withTimeout(db.collection('trips').doc(pin).set({
-      active: true, paused: false, pausedAt: null,
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true }), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
-    state.share.active = true;
-    state.share.pin = pin;
-    state.share.ownerUid = uid;
-    state.share.paused = false;
-    state.share.pausedAt = 0;
-    state.share.pausedLoc = null;
-    state.share.lastPushAt = 0;
-    state.share.lastPushLoc = null;
-    state.share.viewerCount = 0;
-    // No rememberOwnTrip() here — this is reconnecting to a pin that was
-    // already recorded when it was first created in startSharing(), not a
-    // new trip. Calling it again here (a bug fixed in v2026.09.17.6) was
-    // adding a fresh duplicate entry to "My past trip logs" every single
-    // time a leg got resumed — e.g. after any app-update reload — which is
-    // exactly why that list could balloon to several entries in one day
-    // despite only ever actually starting sharing once or twice.
-    subscribeOwnEvents(pin);
-    subscribeViewerCount(pin);
-    subscribeViewerMessages(pin);
-    renderViewerMessages();
-  } catch (e) {
-    toast("Couldn't reconnect sharing: " + e.message, 6000);
   }
+  toast("Couldn't reconnect sharing: " + lastError.message, 6000);
 }
 
 /* ============================== CONTEXT-SENSITIVE HELP ============================== */
