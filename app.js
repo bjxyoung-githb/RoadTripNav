@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.21.1';
+const APP_VERSION = 'v2026.09.25.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -4319,6 +4319,11 @@ function getAutoWatchPinFromUrl() {
 // point: someone who isn't comfortable with apps just taps the link their
 // family member sent and is watching, no typing required.
 async function watchTripFromLink(pin) {
+  // Hand off from the inline loading cover in index.html (see the comment
+  // there) the instant real routing takes over, success or failure either
+  // way — from here on the normal watch-screen UI (or its own error
+  // state) is what should be visible, not that placeholder.
+  document.getElementById('watchLinkLoading')?.classList.add('hidden');
   document.getElementById('setupScreen').classList.add('hidden');
   document.getElementById('watchScreen').classList.remove('hidden');
   document.getElementById('watchPinEntry').classList.add('hidden');
