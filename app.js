@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.20.4';
+const APP_VERSION = 'v2026.09.20.5';
 
 /* ============================== UTILITIES ============================== */
 
@@ -2337,6 +2337,23 @@ function firebaseConfigured() {
 // this, there's simply no error to catch and show.
 const FIREBASE_CONNECT_TIMEOUT_MS = 20000;
 
+// Same reasoning as initFirebase()'s own timeout, applied to the individual
+// Firestore reads/writes in the sharing flow (generateUniquePin's lookups,
+// the initial trip doc write, resuming an existing share) — signing in can
+// succeed fine on a shaky connection while the very next network call still
+// hangs with neither a success nor an error, which otherwise leaves the UI
+// stuck on "Connecting…" indefinitely with no way to retry short of
+// reloading the whole page.
+function withTimeout(promise, ms, message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
+}
+
 let fbInitPromise = null;
 function initFirebase() {
   if (fbInitPromise) return fbInitPromise;
@@ -2372,7 +2389,7 @@ function randomPin() { return String(Math.floor(100000 + Math.random() * 900000)
 async function generateUniquePin(db, uid) {
   for (let i = 0; i < 6; i++) {
     const pin = randomPin();
-    const snap = await db.collection('trips').doc(pin).get();
+    const snap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
     if (!snap.exists) return pin;
     const data = snap.data();
     if (data.ownerUid === uid || data.active === false) return pin; // safe to reuse
@@ -2450,7 +2467,7 @@ async function startSharing() {
       payload.itineraryFullRouteCoords = buildItineraryOverviewCoords(state.itinerary);
       payload.currentLegIndex = state.itinerary.currentLegIdx;
     }
-    await db.collection('trips').doc(pin).set(payload);
+    await withTimeout(db.collection('trips').doc(pin).set(payload), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
 
     state.share.active = true;
     state.share.pin = pin;
@@ -5344,15 +5361,15 @@ async function resumeActiveLeg(snap) {
 async function resumeSharing(pin) {
   try {
     const { db, uid } = await initFirebase();
-    const docSnap = await db.collection('trips').doc(pin).get();
+    const docSnap = await withTimeout(db.collection('trips').doc(pin).get(), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
     if (!docSnap.exists || docSnap.data().ownerUid !== uid) {
       toast("Couldn't reconnect the share link from before — tap Start Sharing for a new one.", 6000);
       return;
     }
-    await db.collection('trips').doc(pin).set({
+    await withTimeout(db.collection('trips').doc(pin).set({
       active: true, paused: false, pausedAt: null,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+    }, { merge: true }), FIREBASE_CONNECT_TIMEOUT_MS, "Couldn't connect — check your signal and try again.");
     state.share.active = true;
     state.share.pin = pin;
     state.share.ownerUid = uid;
