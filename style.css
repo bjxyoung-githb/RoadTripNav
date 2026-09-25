@@ -158,6 +158,9 @@ input:disabled { opacity: .6; }
   color: var(--accent); border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700;
 }
 .reply-btn:active { background: rgba(59,130,246,.3); }
+/* Your own last voice reply, kept visible above incoming messages until the
+   next one replaces it — see renderViewerMessages()/sendDriverReply(). */
+.viewer-reply-sent { background: rgba(34,197,94,.12); border: 1px solid var(--good); }
 
 /* Send-a-message box — viewer/watch side, see sendViewerMessage() */
 .viewer-message-compose { margin: 4px 0 2px; }
