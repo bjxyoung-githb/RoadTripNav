@@ -713,14 +713,19 @@ avoids that.
   **📋 Copy** instead and paste the link into your text/email app by hand.
 - **Tapping "Start Sharing" (or Resume Trip's automatic reconnect) gets
   stuck on "Connecting…" and never finishes or shows an error** — fixed as
-  of v2026.09.20.4. Before that fix, a connection hiccup (a satellite dish
-  mid-handover, a brief dead zone) could leave that request neither
+  of v2026.09.20.4/.5. Before that fix, a connection hiccup (a satellite
+  dish mid-handover, a brief dead zone) could leave a request neither
   succeeding nor failing, so there was nothing to catch and show — and
   because that failed attempt got remembered, even a full reconnect
   afterward (restarting Starlink, waiting for signal) couldn't get a fresh
-  try without reloading the page. It now gives up after 20 seconds with a
-  plain "Couldn't connect — check your signal and try again" message and
-  clears that attempt so the very next tap starts clean.
+  try without reloading the page. v2026.09.20.4 fixed this for the initial
+  sign-in step; v2026.09.20.5 extended the same 20-second give-up-and-show-
+  an-error behavior to the actual trip-creation/reconnect steps right after
+  sign-in, since those can just as easily be the one that hangs on a shaky
+  connection, and the "Connecting…" text wasn't updating to show that. If
+  this still happens, first check the version footer at the bottom of the
+  screen reads v2026.09.20.5 or later — this needs that version's fix on
+  both counts.
 - **The app crashed outright after several hours of active sharing** —
   fixed as of v2026.09.20.4. The Trip Log (photos, videos, comments, and
   the automatic state/city/time-zone-crossing notes) had no upper limit —
