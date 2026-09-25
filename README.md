@@ -712,20 +712,25 @@ avoids that.
   browsers (mostly on desktop) don't offer that share-sheet feature; tap
   **📋 Copy** instead and paste the link into your text/email app by hand.
 - **Tapping "Start Sharing" (or Resume Trip's automatic reconnect) gets
-  stuck on "Connecting…" and never finishes or shows an error** — fixed as
-  of v2026.09.20.4/.5. Before that fix, a connection hiccup (a satellite
-  dish mid-handover, a brief dead zone) could leave a request neither
-  succeeding nor failing, so there was nothing to catch and show — and
-  because that failed attempt got remembered, even a full reconnect
-  afterward (restarting Starlink, waiting for signal) couldn't get a fresh
-  try without reloading the page. v2026.09.20.4 fixed this for the initial
-  sign-in step; v2026.09.20.5 extended the same 20-second give-up-and-show-
-  an-error behavior to the actual trip-creation/reconnect steps right after
-  sign-in, since those can just as easily be the one that hangs on a shaky
-  connection, and the "Connecting…" text wasn't updating to show that. If
-  this still happens, first check the version footer at the bottom of the
-  screen reads v2026.09.20.5 or later — this needs that version's fix on
-  both counts.
+  stuck on "Connecting…" and never finishes or shows an error** —
+  v2026.09.20.4/.5 made this at least show a "Couldn't connect — check your
+  signal and try again" message after 20 seconds instead of hanging
+  forever with nothing to look at, but on some connections that error kept
+  showing up every time, even with a perfectly good signal (other sites,
+  even another device on the same connection, working completely fine).
+  v2026.09.20.6 addresses the actual cause: sharing depends on Firestore
+  (the database behind it), which normally opens one long-lived streaming
+  connection rather than the short, ordinary web requests everything else
+  in the app uses — and some networks (a handful of corporate/VPN setups,
+  and apparently some satellite connections, Starlink included) silently
+  swallow that specific kind of connection without rejecting it outright,
+  which is exactly what produced an unending "check your signal" error
+  despite the signal being fine. This version tells Firestore to
+  automatically fall back to plain, ordinary HTTPS requests when that
+  happens, which get through those same networks without issue. If
+  sharing still won't connect after updating to v2026.09.20.6 or later,
+  that points to something else (Firebase project setup — see section 7 —
+  rather than the network), so let me know and we'll dig further.
 - **The app crashed outright after several hours of active sharing** —
   fixed as of v2026.09.20.4. The Trip Log (photos, videos, comments, and
   the automatic state/city/time-zone-crossing notes) had no upper limit —
