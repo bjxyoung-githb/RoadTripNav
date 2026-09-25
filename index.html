@@ -25,9 +25,43 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.09.21.1">
+<link rel="stylesheet" href="style.css?v=v2026.09.25.1">
 </head>
 <body>
+
+<!-- If this page was opened via a shared "watch" link, cover the screen
+     with a simple loading message immediately — before the browser even
+     starts on the render-blocking Leaflet/Firebase <script> tags near the
+     bottom of this page. Without this, on a slow or spotty connection
+     (the norm for family following along on a road trip), the plain,
+     unhidden HTML underneath — the driver's own trip-setup form — sits
+     fully visible for however long those scripts take to load, and
+     whoever tapped the link understandably assumes it sent them to the
+     wrong place. app.js's own init() (see getAutoWatchPinFromUrl() /
+     watchTripFromLink()) does the real routing once it finally loads and
+     runs; this is purely a stopgap for the gap before that, which is why
+     the ?watch= check is duplicated here as a tiny inline script instead
+     of waiting for app.js. watchTripFromLink() hides this the instant it
+     takes over; the setTimeout below is just a safety net in case app.js
+     never runs at all (offline, a script error), so this can't get stuck
+     covering the page forever. Deliberately inline-styled rather than
+     relying on style.css, so it doesn't wait on that either. -->
+<div id="watchLinkLoading" class="hidden" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:#0b1220;color:#e8edf5;text-align:center;padding:20px;">
+  <div style="font-size:38px;">🧭</div>
+  <div style="font-size:17px;">Loading your family's trip…</div>
+</div>
+<script>
+(function () {
+  var pin = (new URLSearchParams(location.search).get('watch') || '').trim();
+  if (/^\d{4,8}$/.test(pin)) {
+    document.getElementById('watchLinkLoading').classList.remove('hidden');
+    setTimeout(function () {
+      var el = document.getElementById('watchLinkLoading');
+      if (el) el.classList.add('hidden');
+    }, 15000);
+  }
+})();
+</script>
 
 <header id="topbar">
   <div class="brand">🧭 Road Trip Navigator</div>
@@ -398,9 +432,9 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
-<script src="assets/us-states-data.js?v=v2026.09.21.1"></script>
-<script src="assets/us-cities-data.js?v=v2026.09.21.1"></script>
-<script src="assets/us-timezones-data.js?v=v2026.09.21.1"></script>
-<script src="app.js?v=v2026.09.21.1"></script>
+<script src="assets/us-states-data.js?v=v2026.09.25.1"></script>
+<script src="assets/us-cities-data.js?v=v2026.09.25.1"></script>
+<script src="assets/us-timezones-data.js?v=v2026.09.25.1"></script>
+<script src="app.js?v=v2026.09.25.1"></script>
 </body>
 </html>
