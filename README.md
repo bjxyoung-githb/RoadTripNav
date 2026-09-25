@@ -621,6 +621,27 @@ avoids that.
   through the same channel as music/podcasts, and if Bluetooth was
   connected to the car, that volume is separately controlled by the car);
   on iPhone, the physical mute switch silences it same as any app.
+- **Voice guidance only speaks for about 5-10 seconds and cuts off
+  mid-message** — this is a well-known Android Chrome bug: a single spoken
+  message running much past ~10-15 seconds can silently stop with no error.
+  As of v2026.09.21.1, a longer message is now broken into shorter,
+  sentence-sized pieces spoken back to back instead of one long one — each
+  piece finishes well under that window, so a cutoff loses at most a few
+  words rather than the rest of the whole message. The periodic nudge that
+  keeps the speech engine from wedging shut (previous bullet) also now runs
+  more often (every 4 seconds instead of 10) for the same reason.
+- **Voice guidance doesn't speak at all while connected to the car's
+  Bluetooth, forcing you to turn Bluetooth off — which then means no
+  hands-free phone calls** — this one's a known rough edge in how Android
+  routes audio to a Bluetooth-connected system, not something this app can
+  fully control. As of v2026.09.21.1 it plays a brief, silent sound right
+  before every spoken message — on some phones, actual audio playback
+  (rather than speech synthesis alone) is what gets the OS to hand output
+  over to the connected Bluetooth device properly, so this is a real
+  mitigation for that specific class of bug, but it's best-effort, not a
+  guaranteed fix for every phone/car combination. If it's still silent
+  over Bluetooth after updating, that's worth reporting back — knowing it
+  didn't help is useful information too.
 - **Phone screen dims or locks while navigating** — fixed as of
   v2026.09.17.3: the app now keeps the screen awake automatically the whole
   time you have an active route, the same way Google Maps does, so a phone
@@ -639,6 +660,21 @@ avoids that.
   shown next to the status (± feet); it should tighten up after a few
   seconds outdoors/moving. Tunnels, parking garages, and dense tree cover
   can cause temporary drift, same as any GPS app.
+- **Typing into "Set manually" for the starting point keeps getting wiped
+  out by your live GPS coordinates mid-keystroke** — fixed as of
+  v2026.09.21.1. Live GPS fixes arrive every second or two, and the field
+  used to redraw itself from the latest one on every single fix — including
+  while you still had it open for typing, before you'd actually picked
+  anything yet. It now leaves the field alone for the whole time you're
+  choosing a manual start, only resuming live-GPS display once you tap
+  "Set manually" again for a fresh attempt.
+- **A manual starting point set once keeps getting reused for every leg
+  after that, instead of going back to live GPS** — also fixed as of
+  v2026.09.21.1 (a related bug, found while fixing the one above): nothing
+  was ever resetting it back once a leg was calculated. Ending a leg now
+  clears it, so the next one defaults back to your phone's live position,
+  which is what you want the vast majority of the time — set it manually
+  again with "Set manually" on any leg where you specifically need to.
 - **No sound for voice guidance** — make sure you tapped "Enable Voice
   Guidance" once, and that your phone isn't in silent/mute mode (some
   phones block web page audio when the hardware mute switch is on).
@@ -658,6 +694,19 @@ avoids that.
   short of your exact pin" banner mentioned above, which is for a smaller
   gap (up to ~500 feet) that still lets a route calculate, just not all the
   way to the exact spot.
+- **An address search offers a green "Exact" match, but it's on a
+  completely different street than the one typed** — fixed as of
+  v2026.09.21.1. When the map data doesn't have your specific house number
+  on your specific street, it could still hand back some other nearby
+  address at full "exact" precision — same house number, wrong street —
+  with nothing to suggest it wasn't a real match. Search now checks that a
+  result actually mentions the street name typed (ignoring directionals
+  like "North"/"N" and suffixes like "Trail"/"Trl" that get abbreviated
+  inconsistently) before trusting it as "Exact"; a mismatched one is now
+  ranked below the honest lower-precision results instead of appearing
+  first as if it were correct. If your specific address still doesn't turn
+  up a real match after this, that means the map data genuinely doesn't
+  have it — the next bullet below covers that case.
 - **Search only offers a street/city match, not the exact address** — the
   free map data behind search doesn't have every U.S. address on file,
   especially newer or rural ones. Pick the closest match and use the
@@ -712,25 +761,40 @@ avoids that.
   browsers (mostly on desktop) don't offer that share-sheet feature; tap
   **📋 Copy** instead and paste the link into your text/email app by hand.
 - **Tapping "Start Sharing" (or Resume Trip's automatic reconnect) gets
-  stuck on "Connecting…" and never finishes or shows an error** —
-  v2026.09.20.4/.5 made this at least show a "Couldn't connect — check your
-  signal and try again" message after 20 seconds instead of hanging
-  forever with nothing to look at, but on some connections that error kept
-  showing up every time, even with a perfectly good signal (other sites,
-  even another device on the same connection, working completely fine).
-  v2026.09.20.6 addresses the actual cause: sharing depends on Firestore
-  (the database behind it), which normally opens one long-lived streaming
-  connection rather than the short, ordinary web requests everything else
-  in the app uses — and some networks (a handful of corporate/VPN setups,
-  and apparently some satellite connections, Starlink included) silently
-  swallow that specific kind of connection without rejecting it outright,
-  which is exactly what produced an unending "check your signal" error
-  despite the signal being fine. This version tells Firestore to
-  automatically fall back to plain, ordinary HTTPS requests when that
-  happens, which get through those same networks without issue. If
-  sharing still won't connect after updating to v2026.09.20.6 or later,
-  that points to something else (Firebase project setup — see section 7 —
-  rather than the network), so let me know and we'll dig further.
+  stuck on "Connecting…", or keeps failing with "Couldn't connect — check
+  your signal"** — three related fixes went into this:
+  - v2026.09.20.4/.5: instead of hanging forever with nothing to look at,
+    show that "Couldn't connect" error after 20 seconds so there's at
+    least something to react to.
+  - v2026.09.20.6: told Firestore (the database behind sharing) to
+    automatically fall back to plain, ordinary HTTPS requests instead of
+    the long-lived streaming connection it normally prefers — some
+    networks (a handful of corporate/VPN setups, and apparently some
+    satellite connections) silently swallow that specific kind of
+    connection without rejecting it outright, which is what produced an
+    unending "check your signal" error despite the signal being genuinely
+    fine (other sites, even another device on the same connection, working
+    normally).
+  - v2026.09.20.7: for a connection where that's still an intermittent
+    rather than a constant problem (a satellite dish's routine brief
+    handover hiccups being the likely case on Starlink), Start Sharing and
+    the automatic Resume Trip reconnect now retry on their own — up to two
+    extra tries, a couple seconds apart — before actually giving up and
+    showing an error with its own "Try Again" button, rather than making
+    you notice the failure and retry it by hand every single time.
+  If it's still failing after all of that (not intermittently — every
+  single attempt, retries included), the error message itself now says
+  which specific step failed (signing in / checking passcode availability
+  / saving the trip / looking up the trip / reconnecting the trip) — worth
+  including that exact wording if you report it back, since it narrows
+  down where the connection is actually being blocked. As a quick way to
+  tell whether this is a Starlink-specific block or something else
+  entirely: if your phone has its own cellular signal, try switching off
+  Starlink's Wi-Fi and attempting Start Sharing once over cellular data
+  instead — if it connects fine there, the issue is specific to how
+  Starlink's network handles this; if it still fails the same way, the
+  cause is somewhere else (most likely the Firebase project setup — see
+  section 7) and worth flagging back either way.
 - **The app crashed outright after several hours of active sharing** —
   fixed as of v2026.09.20.4. The Trip Log (photos, videos, comments, and
   the automatic state/city/time-zone-crossing notes) had no upper limit —
@@ -916,6 +980,13 @@ avoids that.
   speech-recognition limitations (accent, road noise, weak connection on
   Safari, which can need network access to transcribe) — just tap 🎤 Reply
   again and try once more.
+- **After replying, the confirmation showing what got transcribed
+  disappears too fast to actually read it** — fixed as of v2026.09.21.1.
+  The brief pop-up confirmation is still there, but your reply now also
+  shows up as its own line right at the top of the Messages from Family
+  panel ("✅ You replied to [name]: ...") and stays there until your next
+  reply replaces it — so there's no rush to catch it in a few seconds;
+  check it whenever's convenient, even a while later.
 - **A state (or city/time-zone) crossing comment didn't show up, right
   around when a photo was taken** — improved in v2026.09.19.5. Taking a
   photo through the phone's camera can background this browser tab, and on
