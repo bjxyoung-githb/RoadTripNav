@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.25.1';
+const APP_VERSION = 'v2026.09.26.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -85,27 +85,80 @@ function fmtDurationShort(sec) {
   return m + ' min';
 }
 
-function fmtClockFromNowPlus(sec) {
+// `tz`, where accepted below, is one of window.US_TIMEZONES_DATA's entries
+// (see findTimezoneForPoint()) — i.e. it has an `.ianaId`. Passing one
+// renders the clock/date in THAT zone rather than whatever zone this phone
+// currently thinks it's in, which matters the moment a route crosses a
+// time zone line: without it, an ETA computed while still in, say,
+// Arizona would show an Arizona clock time even for arrival somewhere on
+// Pacific time, which is off by however many hours the zones differ by —
+// not what "what time will it actually be when I get there" needs.
+// Omitting `tz` (or passing one without a usable ianaId) falls back to the
+// browser's own current zone exactly as before.
+function fmtClockFromNowPlus(sec, tz) {
   if (sec == null || isNaN(sec)) return '–';
   const d = new Date(Date.now() + sec * 1000);
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const opts = { hour: 'numeric', minute: '2-digit' };
+  if (tz && tz.ianaId) opts.timeZone = tz.ianaId;
+  return d.toLocaleTimeString([], opts);
+}
+
+// The live, DST-aware abbreviation ("MST", "PDT", ...) for an IANA zone id
+// at a given moment — same Intl trick as currentUtcOffsetMinutes() above
+// it, used here to label an ETA with the zone it's shown in whenever that
+// differs from the zone you're currently in, so a clock time that looks
+// "earlier" than now (because the destination is a zone behind) reads as
+// an adjustment rather than a bug. '' on an unrecognized id or a browser
+// without Intl timeZoneName support — callers just omit the label then.
+function liveTzAbbr(ianaId, atDate) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: ianaId, timeZoneName: 'short' }).formatToParts(atDate || new Date());
+    const p = parts.find((x) => x.type === 'timeZoneName');
+    return p ? p.value : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Y/M/D for a date as observed in a given IANA zone (or the browser's own
+// current zone when `tzId` is falsy) — the building block etaDateLabel()
+// below needs to compare "today" and "arrival day" in the SAME zone;
+// Date's own getFullYear()/getMonth()/getDate() only ever answer for the
+// browser's local zone, which is wrong the moment `tz` names a different
+// one.
+function ymdInZone(d, tzId) {
+  if (!tzId) return { y: d.getFullYear(), m: d.getMonth(), day: d.getDate() };
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: tzId, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(d);
+    const get = (t) => parseInt(parts.find((p) => p.type === t).value, 10);
+    return { y: get('year'), m: get('month') - 1, day: get('day') };
+  } catch (e) {
+    return { y: d.getFullYear(), m: d.getMonth(), day: d.getDate() }; // unrecognized tzId — fall back rather than throw
+  }
 }
 
 // Label shown under the ETA time whenever arrival falls on a different
 // calendar day than right now — on a multi-day leg (hundreds/thousands of
 // miles), "9:30 AM" alone reads as "this morning" even when it's actually
 // a day or more out. Returns '' for a same-day ETA, since the plain time
-// is unambiguous there.
-function etaDateLabel(sec) {
+// is unambiguous there. See fmtClockFromNowPlus() above for what `tz` is;
+// the same-day/tomorrow comparison is made in THAT zone (via ymdInZone()),
+// not the browser's own, so it agrees with the clock time next to it.
+function etaDateLabel(sec, tz) {
   if (sec == null || isNaN(sec)) return '';
+  const tzId = tz && tz.ianaId;
   const now = new Date();
   const eta = new Date(Date.now() + sec * 1000);
-  const sameDay = eta.getFullYear() === now.getFullYear() && eta.getMonth() === now.getMonth() && eta.getDate() === now.getDate();
+  const a = ymdInZone(now, tzId);
+  const b = ymdInZone(eta, tzId);
+  const sameDay = a.y === b.y && a.m === b.m && a.day === b.day;
   if (sameDay) return '';
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const isTomorrow = eta.getFullYear() === tomorrow.getFullYear() && eta.getMonth() === tomorrow.getMonth() && eta.getDate() === tomorrow.getDate();
+  const tomorrow = new Date(a.y, a.m, a.day + 1);
+  const isTomorrow = b.y === tomorrow.getFullYear() && b.m === tomorrow.getMonth() && b.day === tomorrow.getDate();
   if (isTomorrow) return 'Tomorrow';
-  return eta.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  const opts = { weekday: 'short', month: 'short', day: 'numeric' };
+  if (tzId) opts.timeZone = tzId;
+  return eta.toLocaleDateString([], opts);
 }
 
 function debounce(fn, ms) {
@@ -716,15 +769,22 @@ async function handleMapTapForEta(lat, lon) {
       orsReverseGeocode(lat, lon),
       nwsCurrentConditionsAt(lat, lon),
     ]);
-    const etaTime = fmtClockFromNowPlus(route.totalDur);
-    const etaDate = etaDateLabel(route.totalDur);
+    // The tapped spot's own zone, not necessarily the same as wherever
+    // this leg eventually ends up — a tap-for-ETA can land anywhere.
+    const tapTz = findTimezoneForPoint(lat, lon);
+    const etaTime = fmtClockFromNowPlus(route.totalDur, tapTz);
+    const etaDate = etaDateLabel(route.totalDur, tapTz);
+    const curTz = findTimezoneForPoint(state.loc.lat, state.loc.lon);
+    const tzNote = (tapTz && curTz && tapTz.ianaId !== curTz.ianaId)
+      ? ' ' + liveTzAbbr(tapTz.ianaId, new Date(Date.now() + route.totalDur * 1000))
+      : '';
     const lastCoord = route.coords[route.coords.length - 1];
     const elevFt = (lastCoord && typeof lastCoord[2] === 'number') ? Math.round(lastCoord[2] * M_TO_FT) : null;
     marker.setPopupContent(`
       <div style="min-width:180px;">
         <b>📍 ${escapeHtml(label || 'This spot')}</b><br>
         ${fmtMiles(route.totalDist)} · ${fmtDurationShort(route.totalDur)} drive<br>
-        <b>ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>
+        <b>ETA ${etaTime}${tzNote}${etaDate ? ' · ' + etaDate : ''}</b>
         ${tapEtaExtrasLine(elevFt, weather)}
       </div>`);
   } catch (e) {
@@ -1574,15 +1634,18 @@ function reportVoiceFailure(detail) {
   toast('🔇 Voice guidance failed' + (detail ? ' (' + detail + ')' : '') + ' — try muting and re-enabling it in Settings.', 6000);
 }
 
-// Breaks a message into shorter, sentence-sized pieces and queues each as
-// its own utterance, rather than speaking it as one long one. Android
-// Chrome has a well-known bug where a single utterance running much past
-// ~10-15 seconds can silently cut off mid-sentence with no error fired —
-// exactly "it only speaks for a few seconds and cuts off." Several short
-// utterances queued back to back are far more reliable: each one finishes
-// well under that window, so a cut affects at most one short piece rather
-// than losing the rest of the whole message.
-const SPEECH_CHUNK_MAX_CHARS = 180;
+// Breaks a message into shorter, sentence-sized pieces spoken one at a
+// time (see speakChunksSequentially() below), rather than as one long
+// utterance. Android Chrome has a well-known bug where a single utterance
+// running much past ~10-15 seconds can silently cut off mid-sentence with
+// no error fired — exactly "it only speaks for a few seconds and cuts
+// off." Short utterances finish well under that window, so a cut affects
+// at most one short piece rather than losing the rest of the whole
+// message. Trimmed down from 180 to 140 on a Galaxy S24 report of cutoffs
+// persisting even after chunking — 180 characters is close enough to that
+// ~10-15s window at a normal speaking rate that a slightly slower voice or
+// device could still bump right up against it.
+const SPEECH_CHUNK_MAX_CHARS = 140;
 function splitForSpeech(text) {
   const sentences = text.match(/[^.!?]+[.!?]*\s*/g) || [text];
   const chunks = [];
@@ -1618,17 +1681,71 @@ function playSilentAudioNudge() {
   } catch (e) { /* ignore */ }
 }
 
+// Every speak() call bumps this and hands its own value down through the
+// chunk chain below — see speakChunksSequentially()'s very first check for
+// why: without it, an old message's chunks can keep right on talking
+// (or, worse, interleave) after a newer speak() has already cancelled and
+// replaced it.
+let speechGeneration = 0;
+
+// How long to wait for a chunk's onend before giving up on it and moving
+// to the next one anyway, in speakChunksSequentially()'s watchdog. Average
+// speech is roughly 12-13 characters/second; this pads well past that
+// (plus a flat floor for very short chunks) so the watchdog only ever
+// fires on a chunk that's genuinely stuck, not one that's simply still
+// talking on a slower voice or rate.
+function estimateSpeechMs(text) {
+  return Math.max(2500, text.length * 110);
+}
+
+// Speaks one chunk, then — once it actually finishes (onend), errors out,
+// or the watchdog below gives up waiting on it — moves on to the next one.
+// This used to queue every chunk up front with a speak() call per chunk in
+// a single forEach; on a Galaxy S24 (and reportedly other Android phones)
+// that queuing is unreliable enough that only the first chunk would ever
+// actually play, with everything queued behind it silently dropped —
+// which looks exactly like "it speaks for a few seconds and cuts off,"
+// even with short per-chunk utterances that individually finish nowhere
+// near the ~10-15s single-utterance cutoff bug splitForSpeech() exists
+// for. Only ever starting the NEXT chunk once this one is truly done
+// sidesteps that queuing bug rather than depending on Chrome to work
+// through a backlog of already-queued utterances on its own.
+function speakChunksSequentially(chunks, i, gen) {
+  if (gen !== speechGeneration) return; // superseded by a newer speak() call — let that one own the queue instead
+  if (i >= chunks.length) return;
+  const u = new SpeechSynthesisUtterance(chunks[i]);
+  u.rate = 1.0;
+  let advanced = false;
+  const advance = () => {
+    if (advanced) return; // onend and the watchdog can each fire for the same chunk — only ever move on once
+    advanced = true;
+    clearTimeout(watchdog);
+    speakChunksSequentially(chunks, i + 1, gen);
+  };
+  u.onend = advance;
+  u.onerror = (e) => { reportVoiceFailure(e && e.error); advance(); };
+  const watchdog = setTimeout(advance, estimateSpeechMs(chunks[i]));
+  try {
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    reportVoiceFailure(e && e.message);
+    advance();
+  }
+}
+
 function speak(text) {
   if (!voiceSupported() || !state.settings.voiceEnabled) return;
   try {
+    speechGeneration++;
+    const myGen = speechGeneration;
     window.speechSynthesis.cancel(); // don't let announcements pile up/overlap
     playSilentAudioNudge();
-    splitForSpeech(text).forEach((chunk) => {
-      const u = new SpeechSynthesisUtterance(chunk);
-      u.rate = 1.0;
-      u.onerror = (e) => reportVoiceFailure(e && e.error);
-      window.speechSynthesis.speak(u);
-    });
+    const chunks = splitForSpeech(text);
+    // A speak() called in the very same tick as the cancel() just above
+    // is, on some Android versions, silently swallowed rather than
+    // actually starting — pushing the first chunk to the next tick avoids
+    // racing with that cancel().
+    setTimeout(() => speakChunksSequentially(chunks, 0, myGen), 30);
   } catch (e) { reportVoiceFailure(e && e.message); }
 }
 
@@ -1987,8 +2104,16 @@ async function onLocationUpdate() {
   renderTripProgressBar('tripProgressFill', 'tripProgressPct', traveled, total);
 
   const remainingDur = Math.max(0, state.route.totalDur - state.route.cumDur[idx]);
-  document.getElementById('statEta').textContent = fmtClockFromNowPlus(remainingDur);
-  document.getElementById('statEtaDate').textContent = etaDateLabel(remainingDur);
+  const destTz = destTimezoneForRoute(state.route);
+  document.getElementById('statEta').textContent = fmtClockFromNowPlus(remainingDur, destTz);
+  // Only bother labeling the zone when it's actually a different one than
+  // where the driver is right now — most legs never cross a line at all,
+  // and a same-zone ETA is unambiguous without it.
+  const curTz = findTimezoneForPoint(cur.lat, cur.lon);
+  const tzNote = (destTz && curTz && destTz.ianaId !== curTz.ianaId)
+    ? liveTzAbbr(destTz.ianaId, new Date(Date.now() + remainingDur * 1000))
+    : '';
+  document.getElementById('statEtaDate').textContent = [etaDateLabel(remainingDur, destTz), tzNote].filter(Boolean).join(' · ');
 
   const speedMph = typeof cur.speed === 'number' && cur.speed >= 0 ? cur.speed * MPS_TO_MPH : null;
   document.getElementById('statSpeed').textContent = speedMph != null ? Math.round(speedMph) : '–';
@@ -3559,6 +3684,20 @@ function findTimezoneForPoint(lat, lon) {
   return null;
 }
 
+// The current leg's destination time zone, for the main ETA stat (see
+// onLocationUpdate()). Deliberately NOT cached on the route object itself
+// — state.route gets persisted whole to localStorage on every location
+// update (see persistActiveLeg()), and a US_TIMEZONES_DATA entry carries
+// its full boundary polygon (thousands of coordinates); stashing one of
+// those on the route would balloon that JSON for no real benefit, since
+// this bounding-box-first lookup is exactly as cheap as the one
+// checkUSTimezoneCrossing() already does for the *current* position on
+// every single tick.
+function destTimezoneForRoute(route) {
+  const dest = route && route.destForReroute;
+  return dest ? findTimezoneForPoint(dest.lat, dest.lon) : null;
+}
+
 // The real current UTC offset (in minutes, e.g. -420 for GMT-7) for a given
 // IANA zone id, computed live via the browser's own Intl support rather
 // than tracked by this app — so it's automatically correct on both sides
@@ -4689,9 +4828,17 @@ function handleWatchMapTapForEta(lat, lon) {
   if (remainingSec < -60) {
     body = `<b>Already passed</b> — about ${fmtDurationShort(-remainingSec)} ago`;
   } else {
-    const etaTime = fmtClockFromNowPlus(Math.max(0, remainingSec));
-    const etaDate = etaDateLabel(Math.max(0, remainingSec));
-    body = `${fmtMiles(Math.max(0, aheadMiles))} ahead of them · ${fmtDurationShort(Math.max(0, remainingSec))} more driving<br><b>Est. ETA ${etaTime}${etaDate ? ' · ' + etaDate : ''}</b>`;
+    const clampedSec = Math.max(0, remainingSec);
+    // The tapped spot's own zone, not necessarily the traveler's current
+    // one — same reasoning as the driver-side tap-for-ETA.
+    const tapTz = findTimezoneForPoint(lat, lon);
+    const etaTime = fmtClockFromNowPlus(clampedSec, tapTz);
+    const etaDate = etaDateLabel(clampedSec, tapTz);
+    const travelerTz = findTimezoneForPoint(trip.lastLocation.lat, trip.lastLocation.lon);
+    const tzNote = (tapTz && travelerTz && tapTz.ianaId !== travelerTz.ianaId)
+      ? ' ' + liveTzAbbr(tapTz.ianaId, new Date(Date.now() + clampedSec * 1000))
+      : '';
+    body = `${fmtMiles(Math.max(0, aheadMiles))} ahead of them · ${fmtDurationShort(clampedSec)} more driving<br><b>Est. ETA ${etaTime}${tzNote}${etaDate ? ' · ' + etaDate : ''}</b>`;
   }
   // Elevation is only as good as the nearest shared route sample (an
   // approximation, same caveat as offRouteNote above) — but weather needs
