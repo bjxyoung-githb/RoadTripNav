@@ -176,12 +176,21 @@ avoids that.
   entirely on most phones. On a leg long enough that arrival won't be
   today, a small date (Tomorrow, or the weekday and date further out)
   appears right under the ETA time so it can't be misread as "later
-  today."
+  today." (v2026.09.26.1) The ETA clock is shown in whatever time zone
+  your destination is actually in, not the zone you're currently driving
+  through — so if this leg crosses a time zone line, the number is the
+  real clock time you'll see when you arrive, not today's zone applied to
+  a place that's an hour (or more) off from it. Whenever that's a
+  different zone than the one you're in right now, its abbreviation
+  (MST, PDT, etc.) shows right next to the time as a heads-up that it's
+  an adjusted reading.
 - **Tap the map for an ETA anywhere** — tap any spot on the map (a town
   ahead, a point along your route, or somewhere off it entirely — a detour,
   a nearby landmark, anything) and a pin drops showing the place name,
   drive distance, drive time, a clock-time ETA, the elevation there, and
-  the current weather. This is a fresh, separate calculation each time and
+  the current weather. Same time-zone-of-the-actual-spot adjustment as the
+  main ETA above applies here too, whether you're the driver or a
+  watcher. This is a fresh, separate calculation each time and
   never changes your actual planned route — it's just "how long would it
   take to get *there* from where I am right now." Anyone watching your
   shared trip can tap their map too, but their version is an estimate
@@ -622,14 +631,35 @@ avoids that.
   connected to the car, that volume is separately controlled by the car);
   on iPhone, the physical mute switch silences it same as any app.
 - **Voice guidance only speaks for about 5-10 seconds and cuts off
-  mid-message** — this is a well-known Android Chrome bug: a single spoken
-  message running much past ~10-15 seconds can silently stop with no error.
-  As of v2026.09.21.1, a longer message is now broken into shorter,
-  sentence-sized pieces spoken back to back instead of one long one — each
-  piece finishes well under that window, so a cutoff loses at most a few
-  words rather than the rest of the whole message. The periodic nudge that
-  keeps the speech engine from wedging shut (previous bullet) also now runs
-  more often (every 4 seconds instead of 10) for the same reason.
+  mid-message** — this is actually two separate Android Chrome bugs, both
+  well-documented and both addressed now:
+  1. A single spoken message running much past ~10-15 seconds can silently
+     stop with no error. As of v2026.09.21.1, a longer message is broken
+     into shorter, sentence-sized pieces instead of one long one — each
+     piece finishes well under that window, so this specific bug can lose
+     at most a few words rather than the rest of the whole message.
+  2. Reported still happening most of the time on a Galaxy S24, even with
+     short pieces: on some Android phones, queuing several short
+     utterances up front (the fix above) is itself unreliable — only the
+     FIRST one ever plays, and everything queued behind it is silently
+     dropped, which looks exactly like a cutoff even though none of the
+     individual pieces were anywhere near the ~10-15s limit. Fixed in
+     v2026.09.26.2: each piece is now only started once the previous one
+     has actually finished (rather than trusting Chrome to work through a
+     backlog of already-queued ones), with a fallback timer that moves on
+     to the next piece anyway if one seems to have gotten stuck rather
+     than firing its normal "finished" event. Also trimmed the max size of
+     each piece a bit further as extra headroom against bug #1.
+  The periodic nudge that keeps the speech engine from wedging shut
+  (previous bullet) also runs every 4 seconds (instead of 10) for the same
+  reason. If cutoffs still happen after updating, it's worth checking your
+  phone's battery settings for whichever browser you're using this app
+  in (Settings → Apps → Chrome (or Samsung Internet) → Battery) — Samsung
+  phones in particular are known for aggressively pausing background app
+  activity ("Put unused apps to sleep" / Adaptive Battery) more
+  aggressively than other Android phones, in ways no website can fully
+  override on its own; setting that browser to "Unrestricted" there rules
+  it out.
 - **Voice guidance doesn't speak at all while connected to the car's
   Bluetooth, forcing you to turn Bluetooth off — which then means no
   hands-free phone calls** — this one's a known rough edge in how Android
