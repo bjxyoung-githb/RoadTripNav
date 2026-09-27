@@ -760,7 +760,31 @@ avoids that.
   link works and drops the pin exactly there. A short link from the phone's
   Share button (`maps.app.goo.gl/...`) can't be read this way — open it once
   in any browser tab first, which turns it into the long link, then paste
-  that one instead.
+  that one instead. (v2026.09.26.3) The link doesn't have to be the only
+  thing you paste, either — Google's own Share sheet often bundles a place
+  name ahead of the actual link ("Dewey-Humboldt, AZ" on its own line above
+  the URL), and this now finds the link wherever it falls in whatever you
+  pasted rather than needing the field to contain nothing but a bare URL.
+- **Tapped a spot in Google Maps to see its coordinates, but long-pressing
+  to copy grabs an address instead** — that's Google Maps itself, not this
+  app: a long-press drops a pin and Maps reverse-geocodes it to the nearest
+  address, and its "Copy" action copies that resolved address text, not
+  the coordinates shown a moment earlier. Use **Share → Copy link** on that
+  pin's card instead of the plain copy/long-press — the link it generates
+  still has the exact coordinates baked into it even when the visible part
+  of the link (and whatever text Maps shows for the place) is a name or
+  address, and pasting that link here (same as the bullet above) drops the
+  pin at those exact coordinates regardless. Typing/pasting the address
+  text itself works too — it just runs through the normal address search
+  above, with that search's usual limits.
+- **Pasted a coordinate, address, or Google Maps link and "Calculate
+  Route" still won't light up** — it needs all three of a recognized
+  destination (the box should show a green "📍 Using..." confirmation, not
+  still be searching or sitting empty), a starting point (live GPS with a
+  fix already, or a manually set one), and an OpenRouteService API key
+  entered in Settings. If the destination box never shows that
+  confirmation line, what was pasted wasn't recognized as any of the
+  formats above — double check it's a full link and not a shortened one.
 - **Starlink/cellular brief dropouts** — the app will show stale/error
   states briefly and recover automatically once the connection returns;
   your route and progress tracking don't require a constant connection
