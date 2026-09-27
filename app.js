@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.26.3';
+const APP_VERSION = 'v2026.09.27.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -416,6 +416,31 @@ function parseLatLon(text) {
   return { lat, lon };
 }
 
+// Recognizes degrees/minutes/seconds coordinates — e.g.
+// 34°43'50.6"N 112°33'07.9"W — the format Google Maps itself shows in a
+// few places (long-press a spot, then look at the coordinate line) instead
+// of the plain decimal degrees parseLatLon() above handles. Requires an
+// actual minutes component (a bare "34° N" with nothing else isn't
+// meaningful DMS) so this never overlaps with parseLatLon()'s own
+// plain-decimal case — callers try that one first, this one second.
+// Seconds are optional (a "degrees + decimal minutes" coordinate like
+// 34°43.843'N is a real format too), but minutes are not.
+function parseDMS(text) {
+  if (!text) return null;
+  const PART = '(-?\\d{1,3}(?:\\.\\d+)?)\\s*°\\s*(\\d{1,2}(?:\\.\\d+)?)\\s*(?:\'|′|’)\\s*(?:(\\d{1,2}(?:\\.\\d+)?)\\s*(?:"|″|”)\\s*)?([NSEWnsew])?';
+  const m = text.trim().match(new RegExp('^' + PART + '\\s*[,\\s]\\s*' + PART + '$'));
+  if (!m) return null;
+  const toDecimal = (deg, min, sec, dir) => {
+    let val = Math.abs(parseFloat(deg)) + parseFloat(min) / 60 + (sec ? parseFloat(sec) / 3600 : 0);
+    if ((dir && /[SsWw]/.test(dir)) || deg.trim().startsWith('-')) val = -val;
+    return val;
+  };
+  const lat = toDecimal(m[1], m[2], m[3], m[4]);
+  const lon = toDecimal(m[5], m[6], m[7], m[8]);
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
 // Recognizes a Google Maps link pasted into a destination/start search box
 // and pulls the coordinates straight out of it — a way around the two gaps
 // in ORS's own geocoder (see orsGeocode()), which is built entirely on
@@ -469,6 +494,24 @@ function parseGoogleMapsUrl(text) {
   }
   return { lat, lon, label };
 }
+
+// Shown in place of search results when a pasted link turns out to be a
+// short one (see parseGoogleMapsUrl()'s comment for why this app can't
+// read where it leads on its own). Leads with the fastest way out first —
+// if the coordinates were already visible on screen in Google Maps before
+// the copy/share step ever happened, there's no need to fight with links
+// at all, just type those numbers straight in — before falling back to
+// the "open it once, then copy the new link" workaround, which is the one
+// that actually needs Google Maps again.
+const SHORT_LINK_HELP_HTML = `<div class="result-item">
+  That's a shortened link — this app can't read where it points to
+  directly. If you saw coordinates on screen when you tapped the spot in
+  Google Maps, the easiest fix is to just type those numbers straight into
+  this box instead (like <code>34.5625, -112.2867</code>). Otherwise, open
+  this link once in any browser tab, wait for the map to load, then copy
+  the link <b>again</b> from there — it'll now be a long
+  <code>google.com/maps/...</code> one — and paste that instead.
+</div>`;
 
 // Words that don't help tell one street from another — directionals and
 // the common street-type suffixes — so they're ignored when checking
@@ -5193,7 +5236,7 @@ function wireSetupScreen() {
     state.pendingDest = null;
     document.getElementById('destFineTune').classList.add('hidden');
     refreshCalcButton();
-    const coords = parseLatLon(e.target.value);
+    const coords = parseLatLon(e.target.value) || parseDMS(e.target.value);
     if (coords) {
       state.pendingDest = { lat: coords.lat, lon: coords.lon, label: `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` };
       destResults.innerHTML = `<div class="result-item selected">📍 Using coordinates ${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)} — drag the pin below to fine-tune if needed.</div>`;
@@ -5207,7 +5250,7 @@ function wireSetupScreen() {
     const gmaps = parseGoogleMapsUrl(e.target.value);
     if (gmaps) {
       if (gmaps.shortLink) {
-        destResults.innerHTML = `<div class="result-item">That's a shortened Google Maps link — open it once in any browser tab first (it'll turn into a longer google.com/maps/... link), then paste that one here instead.</div>`;
+        destResults.innerHTML = SHORT_LINK_HELP_HTML;
         return;
       }
       state.pendingDest = { lat: gmaps.lat, lon: gmaps.lon, label: gmaps.label };
@@ -5257,7 +5300,7 @@ function wireSetupScreen() {
   });
   startInput.addEventListener('input', (e) => {
     document.getElementById('startFineTune').classList.add('hidden');
-    const coords = parseLatLon(e.target.value);
+    const coords = parseLatLon(e.target.value) || parseDMS(e.target.value);
     if (coords) {
       state.manualStart = { lat: coords.lat, lon: coords.lon, label: `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` };
       state.manualStartEditing = false;
@@ -5272,7 +5315,7 @@ function wireSetupScreen() {
     const gmaps = parseGoogleMapsUrl(e.target.value);
     if (gmaps) {
       if (gmaps.shortLink) {
-        startResults.innerHTML = `<div class="result-item">That's a shortened Google Maps link — open it once in any browser tab first (it'll turn into a longer google.com/maps/... link), then paste that one here instead.</div>`;
+        startResults.innerHTML = SHORT_LINK_HELP_HTML;
         return;
       }
       state.manualStart = { lat: gmaps.lat, lon: gmaps.lon, label: gmaps.label };
