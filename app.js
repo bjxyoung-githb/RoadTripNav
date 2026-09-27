@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.26.2';
+const APP_VERSION = 'v2026.09.26.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -432,11 +432,22 @@ function parseLatLon(text) {
 // where it leads), so those are recognized just enough to explain why
 // rather than silently failing outright. Opening a short link once in any
 // browser tab turns it into a full link this can use.
+//
+// The link doesn't have to be the ONLY thing pasted. Google's own Share
+// sheet often bundles a place name/description ahead of the actual URL —
+// "Dewey-Humboldt, AZ\nhttps://maps.app.goo.gl/xxxx" is a completely
+// typical result of picking "Share" and then "Copy" from a pin's card, and
+// selecting/copying a whole shared message text does the same. Searching
+// for the link itself anywhere in the pasted text (rather than requiring
+// the entire field to be nothing but a bare URL) means that surrounding
+// text doesn't quietly send this down the plain-address-search path
+// instead, where a stray place name pasted alongside a real link is
+// unlikely to geocode to anything useful.
 function parseGoogleMapsUrl(text) {
   if (!text) return null;
-  const trimmed = text.trim();
-  if (!/^https?:\/\//i.test(trimmed)) return null;
-  if (!/google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/i.test(trimmed)) return null;
+  const urlMatch = text.match(/https?:\/\/\S*(?:google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl)\S*/i);
+  if (!urlMatch) return null;
+  const trimmed = urlMatch[0].replace(/[.,;:)\]]+$/, ''); // trailing punctuation a sentence/message might tack on
   if (/maps\.app\.goo\.gl|goo\.gl\/maps/i.test(trimmed)) return { shortLink: true };
 
   // Most precise: the place's actual pinned point, e.g. ...!3d34.5395!4d-112.4685...
