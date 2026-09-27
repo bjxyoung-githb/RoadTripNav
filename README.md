@@ -746,9 +746,13 @@ avoids that.
   turnoff)** — type the coordinates straight into the Starting point or
   Destination box instead, like `34.5625, -112.2867` (a few formats work:
   with or without the comma, and with N/S/E/W letters instead of a minus
-  sign, like `34.5625 N, 112.2867 W`). The app recognizes it immediately —
-  no address search needed — and drops a draggable pin so you can nudge it
-  to the exact spot if needed.
+  sign, like `34.5625 N, 112.2867 W`). (v2026.09.27.2) The
+  degrees/minutes/seconds format some phones and Google Maps screens show
+  instead — `34°43'50.6"N 112°33'07.9"W` — is recognized too, seconds
+  included or left off (`34°43.843'N 112°33.132'W` also works). Whichever
+  format, the app recognizes it immediately — no address search needed —
+  and drops a draggable pin so you can nudge it to the exact spot if
+  needed.
 - **Search can't find a small local business, or a street intersection** —
   search here is built on OpenStreetMap, which reliably has well-known
   chains and most addresses but is hit-or-miss on independent local
@@ -757,23 +761,37 @@ avoids that.
   Google Maps instead (much better small-business coverage, and it handles
   intersections fine) and paste its link straight into the Starting point
   or Destination box — a long `google.com/maps/...` or `maps.google.com/...`
-  link works and drops the pin exactly there. A short link from the phone's
-  Share button (`maps.app.goo.gl/...`) can't be read this way — open it once
-  in any browser tab first, which turns it into the long link, then paste
-  that one instead. (v2026.09.26.3) The link doesn't have to be the only
-  thing you paste, either — Google's own Share sheet often bundles a place
-  name ahead of the actual link ("Dewey-Humboldt, AZ" on its own line above
-  the URL), and this now finds the link wherever it falls in whatever you
-  pasted rather than needing the field to contain nothing but a bare URL.
+  link works and drops the pin exactly there. (v2026.09.26.3) The link
+  doesn't have to be the only thing you paste, either — Google's own Share
+  sheet often bundles a place name ahead of the actual link
+  ("Dewey-Humboldt, AZ" on its own line above the URL), and this now finds
+  the link wherever it falls in whatever you pasted rather than needing the
+  field to contain nothing but a bare URL.
+- **Google Maps' Share button hands over a short link
+  (`maps.app.goo.gl/...`)** — this is Google Maps' own default on most
+  phones now, and this app genuinely can't read where a short link leads
+  (that redirect can't be followed from inside a browser page — see
+  parseGoogleMapsUrl()'s comment in app.js if you want the technical why).
+  (v2026.09.27.1) If you already saw the coordinates on screen when you
+  tapped the spot in Google Maps, the fastest fix is to skip links
+  entirely and just type those numbers straight into the box, like
+  `34.5625, -112.2867` (same as the "no address at all for a spot" bullet
+  above) — the app now says this directly when it detects a short link.
+  Otherwise, open the short link once in any browser tab, wait for the map
+  to load, then copy the link **again** from there — it'll now be the long
+  form — and paste that instead.
 - **Tapped a spot in Google Maps to see its coordinates, but long-pressing
   to copy grabs an address instead** — that's Google Maps itself, not this
   app: a long-press drops a pin and Maps reverse-geocodes it to the nearest
   address, and its "Copy" action copies that resolved address text, not
-  the coordinates shown a moment earlier. Use **Share → Copy link** on that
-  pin's card instead of the plain copy/long-press — the link it generates
-  still has the exact coordinates baked into it even when the visible part
-  of the link (and whatever text Maps shows for the place) is a name or
-  address, and pasting that link here (same as the bullet above) drops the
+  the coordinates shown a moment earlier. If you can still see the
+  coordinates on screen, typing them straight into the box (see the bullet
+  above) is the simplest path — no copying needed at all. Otherwise, use
+  **Share → Copy link** on that pin's card instead of the plain
+  copy/long-press — the link it generates still has the exact coordinates
+  baked into it even when the visible part of the link (and whatever text
+  Maps shows for the place) is a name or address, and pasting that link
+  here (same as the bullet above) drops the
   pin at those exact coordinates regardless. Typing/pasting the address
   text itself works too — it just runs through the normal address search
   above, with that search's usual limits.
