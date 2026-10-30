@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.09.27.2';
+const APP_VERSION = 'v2026.10.30.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -5372,11 +5372,41 @@ function wireSetupScreen() {
       if (state.recenterBtnDiv) state.recenterBtnDiv.classList.add('hidden');
       drawRoute();
       onLocationUpdate();
+
+      // Continuing a share from a leg you just ended (see wireEndLeg()) —
+      // that leg left sharing paused but still active under its original
+      // pin, rather than stopping it, specifically so a leg you didn't know
+      // about in advance can still land on the exact same passcode as the
+      // ones before it. Merge this new leg's route/label into that same
+      // trip doc and leave it paused (same as advanceToNextLeg()'s
+      // pre-planned equivalent) until you're actually moving again — the
+      // existing auto-resume-on-movement check in onLocationUpdate() clears
+      // the pause from there; nothing new needed for that part. When
+      // state.share.active is false (a genuinely new share, or one you
+      // deliberately stopped) this is a no-op and Start Sharing This Leg
+      // behaves exactly as it always has, minting a fresh passcode.
+      if (state.share.active && state.fb) {
+        const sh = state.share;
+        sh.routeDirty = false; // pushing fresh coords directly below, no need for the throttled path to repeat it
+        state.fb.db.collection('trips').doc(sh.pin).set({
+          legLabel: state.currentLegLabel,
+          destLabel: leg.destLabel,
+          routeCoords: sampleRouteForShare(state.route, 300),
+          totalMiles: state.route.totalDist,
+          routeUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true }).catch(() => { /* best effort; next location push retries routeCoords via routeDirty */ });
+      }
+
       renderSharePanel();
       requestNavWakeLock();
       updateEndLegButtonLabel(); // resets to the plain wording — state.itinerary is null outside a trip plan
       const choiceMsg = describeRouteChoice(route);
-      if (choiceMsg) toast(choiceMsg, 6000);
+      const continueMsg = state.share.active
+        ? 'Continuing your live share on the same passcode — tap ▶ Resume Sharing (or just start driving) once you\'re back on the road.'
+        : null;
+      const legToast = [choiceMsg, continueMsg].filter(Boolean).join(' ');
+      if (legToast) toast(legToast, 8000);
     } catch (e) {
       errEl.textContent = friendlyRouteError(e, start, dest);
     } finally {
@@ -5542,15 +5572,26 @@ function wireEndLeg() {
       return;
     }
 
-    // Confirm first — same reasoning as stopSharingBtn above: this ends
-    // live sharing too (if it's on), and a stray tap here (reaching for
-    // something else, a bump in the road) shouldn't be able to end a leg
-    // with no way to catch it first.
+    // Confirm first — same reasoning as stopSharingBtn above: a stray tap
+    // here (reaching for something else, a bump in the road) shouldn't be
+    // able to end a leg with no way to catch it first.
+    //
+    // As of v2026.10.30.1 this no longer stops sharing outright just
+    // because there's no next leg already queued up — that used to force a
+    // brand-new passcode for every single leg unless the whole trip was
+    // planned in advance with a Trip Plan (see HELP_TOPICS['trip-plan']).
+    // Instead it pauses sharing exactly like an overnight stop
+    // (pauseSharingForNight()) — same link/passcode, family just sees
+    // "taking a break" — and the very next Calculate Route merges the new
+    // leg into that same share doc instead of starting a fresh one (see the
+    // state.share.active block in wireSetupScreen()'s calcBtn handler
+    // below). Stop Sharing on its own is still the one real way to end
+    // sharing for good.
     const msg = state.share.active
-      ? 'End this leg and go back to planning the next one?\n\nThis also stops live sharing — family keeps access to the route, photos, and comments, just no more live position updates.'
+      ? 'End this leg and go back to planning the next one?\n\nYour shared link keeps working — family will just see you\'re taking a break until you start the next leg under the same passcode. Use "Stop Sharing" instead if you\'re done sharing for good.'
       : 'End this leg and go back to planning the next one?';
     if (!window.confirm(msg)) return;
-    if (state.share.active) stopSharing();
+    if (state.share.active) pauseSharingForNight();
     state.route = null;
     state.itinerary = null;
     state.currentLegLabel = null;
@@ -5835,6 +5876,12 @@ const HELP_TOPICS = {
         needed.</li>
         <li>Changed your mind? <b>Clear</b> empties the queued list so you
         can start over, or just plan a single leg as usual instead.</li>
+        <li>Don't actually know your legs this far ahead? Skip this whole
+        screen and just plan one leg at a time as usual — tapping
+        <b>🏁 End This Leg</b> when you're done keeps live sharing paused
+        under the same passcode rather than ending it, so the next leg you
+        plan (whenever you decide on it) still lands on the same link family
+        already has. See the Share & Trip Log help for details.</li>
       </ul>`,
   },
   'resume-banner': {
@@ -6111,6 +6158,13 @@ const HELP_TOPICS = {
         the Night</b> so family sees a friendly "taking a break" message
         instead of a stale-data warning; it clears itself once you're
         driving again.</li>
+        <li>Don't know all your legs up front? That's fine — just tap
+        <b>🏁 End This Leg</b> like normal when you arrive. Sharing pauses
+        (same "taking a break" message as above) instead of stopping, and
+        whenever you calculate your next leg — even a destination you had no
+        idea about yet — it picks sharing back up under the exact same
+        passcode, no new link to send. Only <b>Stop Sharing</b> below
+        actually ends it.</li>
         <li><b>👀 X watching now</b> only shows on your own screen, so you
         know if anyone actually has the trip open.</li>
         <li><b>Stop Sharing</b> only stops live position updates — the same

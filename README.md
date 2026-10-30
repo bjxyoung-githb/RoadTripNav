@@ -87,13 +87,18 @@ The free tier gives you 2,000 routing requests and 1,000 geocoding
 Once you arrive, tap **🏁 End This Leg / Plan Next Leg** (below the
 Miles/ETA/MPH row) to go back to the planning screen and enter the next
 stretch — previous legs are saved on your phone and listed so you can
-quickly reselect a place you've already routed to. Reloading the page in
-your browser has almost the same effect (it also drops you back at
-planning), but skip that if you have live sharing turned on for the leg
-you're ending — reloading abandons the share instead of cleanly marking it
-"ended," so anyone watching sees a "position may be stale" notice instead
-of a clean stop. Tapping **End This Leg** (or **Stop Sharing** on its own)
-avoids that.
+quickly reselect a place you've already routed to. Don't know where that
+next stretch is going yet? That's fine — you don't need to plan it in
+advance. If you were sharing live, ending the leg this way just pauses
+sharing (family sees "taking a break," same as an overnight stop) instead
+of stopping it, and the moment you calculate your next leg — whenever you
+decide where that is — it picks back up under the *exact same passcode*,
+no new link to send (v2026.10.30.1). Reloading the page in your browser has
+almost the same effect (it also drops you back at planning), but skip that
+if you have live sharing turned on for the leg you're ending — reloading
+abandons the share instead of cleanly marking it "ended," so anyone
+watching sees a "position may be stale" notice instead of a clean pause.
+Tapping **End This Leg** (or **Stop Sharing** on its own) avoids that.
 
 ## 3. What each part does
 
@@ -279,7 +284,10 @@ avoids that.
   own route line updates live as always, but the lighter overview line
   behind it won't reflect the reroute. Don't need any of this? Plan a
   single leg the normal way below and this section just stays out of the
-  way.
+  way — and if you don't know your legs far enough ahead to queue them up
+  like this, that's fine too: planning one leg at a time still keeps the
+  same share link going from leg to leg (v2026.10.30.1), see **Share & Trip
+  Log** just below.
 - **Share & Trip Log** (optional, needs one-time setup — see section 7) —
   tap **Start Sharing This Leg** to get a one-tap link (and a 6-digit
   passcode as a backup) to give to family. Tap **📤 Share Link** to send it
@@ -329,15 +337,20 @@ avoids that.
   the Night** — family sees a friendly "taking a break" message instead of
   a generic stale/no-update note, and it clears itself the next time you've
   driven a bit (or tap **▶ Resume Sharing** yourself); the link keeps
-  working the whole time, nothing to resend. Tap **Stop Sharing** (or
-  **New / End Leg**) when you're actually done for good — that turns off
-  live position updates, but the same link/passcode keeps showing that
-  leg's route, photos, and comments afterward (anyone can still open it,
-  they just won't see your position move); see **My past trip logs**
-  below for how you pull it back up yourself. Both **Stop Sharing** and
-  **🏁 End This Leg** ask you to confirm before doing anything, specifically
-  so a stray tap (reaching for the camera button, a bump in the road) can't
-  cut off sharing or end a leg by accident — tap Cancel and nothing changes.
+  working the whole time, nothing to resend. Don't know all your legs up
+  front and just want to plan one at a time? **🏁 End This Leg** works the
+  same way now (v2026.10.30.1) — it pauses sharing rather than stopping it,
+  and whichever destination you calculate next (even one you had no idea
+  about when you started this leg) picks sharing back up under that same
+  passcode. Tap **Stop Sharing** on its own when you're actually done for
+  good — that's the one action that turns off live position updates for
+  real, though the same link/passcode keeps showing that leg's route,
+  photos, and comments afterward (anyone can still open it, they just won't
+  see your position move); see **My past trip logs** below for how you pull
+  it back up yourself. Both **Stop Sharing** and **🏁 End This Leg** ask you
+  to confirm before doing anything, specifically so a stray tap (reaching
+  for the camera button, a bump in the road) can't cut off sharing or end a
+  leg by accident — tap Cancel and nothing changes.
 - **Naming the trip** — a **✏️** button next to the trip title at the top
   of this panel lets you set (or change) what this trip/leg is called, any
   time — before you start sharing, mid-drive, whatever. It's the same
