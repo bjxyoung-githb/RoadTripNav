@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.10.30.1';
+const APP_VERSION = 'v2026.11.08.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -178,6 +178,7 @@ function toast(msg, ms) {
 
 const LS_SETTINGS = 'rtnav_settings_v1';
 const LS_TRIP = 'rtnav_trip_v1';
+const LS_ELEV_RANGE = 'rtnav_elev_range_v1';
 
 // Safety net for an in-progress leg surviving a full app/browser kill —
 // very possible after being backgrounded for hours (overnight at a hotel,
@@ -306,9 +307,28 @@ function loadTrip() {
 }
 function saveTrip(t) { localStorage.setItem(LS_TRIP, JSON.stringify(t)); }
 
+// Running high/low elevation "of the trip" — see addElevationRangeControl()/
+// updateElevationRangeBadge() for where this is shown (a small always-on
+// badge on the driving map, not tucked in an accordion, since the whole
+// point is to glance at it while driving). "The trip" means everything
+// since the last time you tapped Start Sharing This Leg for a brand-new
+// share (see the reset in startSharing()) — continuing an existing share
+// leg to leg/day to day (pauseSharingForNight()+the next leg's Calculate
+// Route, or a pre-planned Trip Plan's End Day/Continue) deliberately does
+// NOT reset this, so it keeps building across the whole multi-day trip, the
+// same way the share's passcode does. Persisted here (not just in memory)
+// so it survives a page reload/phone restart mid-trip exactly like the
+// "Resume Trip" leg snapshot does.
+function loadElevRange() {
+  try { return Object.assign({ high: null, low: null }, JSON.parse(localStorage.getItem(LS_ELEV_RANGE) || '{}')); }
+  catch (e) { return { high: null, low: null }; }
+}
+function saveElevRange(r) { localStorage.setItem(LS_ELEV_RANGE, JSON.stringify(r)); }
+
 const state = {
   settings: loadSettings(),
   trip: loadTrip(),
+  elevRange: loadElevRange(), // {high, low} in feet — see loadElevRange()'s comment for what resets it
   loc: null,             // latest {lat,lon,accuracy,heading,speed,updatedAt} from this device's own GPS
   geoWatchId: null,
   manualStart: null,    // {lat,lon,label} if user set a manual start
@@ -2182,6 +2202,19 @@ async function onLocationUpdate() {
   const elevFt = currentElevationFt();
   document.getElementById('statElevation').textContent = elevFt != null ? elevFt.toLocaleString() + ' ft' : '–';
 
+  // Folds this fix into the trip's running high/low — see loadElevRange()'s
+  // comment for what "the trip" means here. Only writes to localStorage
+  // when the high or low actually moves, not on every fix (onLocationUpdate
+  // runs on every GPS update, easily several times a minute) — the common
+  // case where neither changes is just a cheap number comparison.
+  if (elevFt != null) {
+    const r = state.elevRange;
+    let changed = false;
+    if (r.high == null || elevFt > r.high) { r.high = elevFt; changed = true; }
+    if (r.low == null || elevFt < r.low) { r.low = elevFt; changed = true; }
+    if (changed) { saveElevRange(r); updateElevationRangeBadge(); }
+  }
+
   // Determine current/next step. `steps[stepIdx]` is the road you're
   // actually driving on right now — but ORS's instruction for a step
   // describes the maneuver that put you onto that road (i.e. the turn you
@@ -2401,6 +2434,7 @@ function initMap() {
   state.map.on('click', (e) => { handleMapTapForEta(e.latlng.lat, e.latlng.lng); });
 
   addMapHelpControl(state.map, 'map-driver');
+  addElevationRangeControl(state.map);
 
   drawTimezoneLines(state.map);
 }
@@ -2430,6 +2464,42 @@ function addRecenterControl(map, setFollowing, getTargetLatLng, onDivReady) {
     },
   });
   return new RecenterControl().addTo(map);
+}
+
+// A small, always-visible (once there's at least one elevation reading)
+// badge on the driver's own map showing the trip's running high/low
+// elevation — see loadElevRange()'s comment for what counts as "the trip"
+// and when it resets. Deliberately a non-interactive label stacked in with
+// the zoom/fullscreen controls up top, not another accordion row below the
+// map, since the whole point is something you can glance at without
+// looking away from driving. state.elevRangeDiv is just the live text
+// target for updateElevationRangeBadge(); nothing here needs updating on
+// every call the way a button's state might.
+function addElevationRangeControl(map) {
+  const ElevationRangeControl = L.Control.extend({
+    options: { position: 'topleft' },
+    onAdd: function () {
+      const div = L.DomUtil.create('div', 'leaflet-bar map-toggle-btn elev-range-btn hidden');
+      div.title = "This trip's elevation range so far";
+      state.elevRangeDiv = div;
+      return div;
+    },
+  });
+  new ElevationRangeControl().addTo(map);
+  updateElevationRangeBadge();
+}
+
+// Called once per GPS fix from onLocationUpdate() (after it's folded the
+// latest reading into state.elevRange) and once up front from
+// addElevationRangeControl()/startSharing() so a resumed leg or a
+// just-reset range shows correctly before the next fix arrives.
+function updateElevationRangeBadge() {
+  const div = state.elevRangeDiv;
+  if (!div) return;
+  const r = state.elevRange;
+  if (r.high == null || r.low == null) { div.classList.add('hidden'); return; }
+  div.classList.remove('hidden');
+  div.innerText = `⛰ ${r.high.toLocaleString()} / ${r.low.toLocaleString()} ft`;
 }
 
 // Shared by both the driver's own map and a viewer's watch map — a small
@@ -2788,6 +2858,12 @@ async function startSharing() {
       state.share.paused = false;
       state.share.pausedAt = 0;
       state.share.pausedLoc = null;
+      // A brand-new share is a brand-new trip, as far as the on-map high/low
+      // elevation badge is concerned — see loadElevRange()'s comment for why
+      // continuing an existing share leg to leg does NOT also hit this.
+      state.elevRange = { high: null, low: null };
+      saveElevRange(state.elevRange);
+      updateElevationRangeBadge();
       rememberOwnTrip(pin, state.currentLegLabel);
       subscribeOwnEvents(pin);
       subscribeViewerCount(pin);
@@ -3234,10 +3310,17 @@ async function compressImageForFirestore(file) {
   }
 }
 
-async function addPhoto(file) {
+// overrideLoc — {lat,lon} — lets a gallery-picked photo (openPhotoPlacement()
+// below) be tagged with wherever it was actually taken instead of wherever
+// you happen to be standing when you get around to adding it, which could
+// easily be a different stop entirely. A just-taken camera photo never
+// passes this — "here, right now" is already correct for it — so it keeps
+// tagging with live GPS exactly as it always has.
+async function addPhoto(file, overrideLoc) {
   const sh = state.share;
   if (!sh.active) { toast('Start sharing first to attach photos to your trip.', 5000); return; }
-  if (!state.loc) { toast('Waiting for GPS before tagging a location.', 4000); return; }
+  const loc = overrideLoc || state.loc;
+  if (!loc) { toast('Waiting for GPS before tagging a location.', 4000); return; }
   if (!file.type.startsWith('image/')) { toast("Please choose a photo — video isn't supported (it needs paid Firebase Storage; photos don't).", 7000); return; }
   toast('Adding photo…', 8000);
   try {
@@ -3247,8 +3330,11 @@ async function addPhoto(file) {
       type: 'photo',
       mediaData: base64,
       mediaType,
-      lat: state.loc.lat, lon: state.loc.lon,
-      elevationFt: currentElevationFt(),
+      lat: loc.lat, lon: loc.lon,
+      // null rather than currentElevationFt() for a placed (non-live) photo —
+      // that reads elevation at your CURRENT position on the route, which has
+      // nothing to do with a pin you just dragged somewhere else on the map.
+      elevationFt: overrideLoc ? null : currentElevationFt(),
       tempF: state.cache.currentTempF, tempUnit: state.cache.currentTempUnit,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       expiresAt, // read by cleanupExpiredMedia() below to auto-delete this doc ~90 days out
@@ -3257,6 +3343,39 @@ async function addPhoto(file) {
   } catch (e) {
     toast("Couldn't add photo: " + e.message, 6000);
   }
+}
+
+// Gallery photo placement — see addPhoto()'s overrideLoc comment for why
+// this exists at all. Holds the chosen file + pin position between
+// "Choose from Gallery" and confirming placement in the modal below.
+let pendingGalleryPhoto = null;
+
+function openPhotoPlacement(file) {
+  if (!state.share.active) { toast('Start sharing first to attach photos to your trip.', 5000); return; }
+  // Current GPS is still the best default guess — most gallery photos added
+  // mid-drive were taken not long ago, nearby. The fine-tune map below lets
+  // you drag it to the actual spot when that guess is wrong (an older photo
+  // from earlier in the trip, say).
+  const start = state.loc || (state.route && state.route.coords[0] ? { lat: state.route.coords[0][1], lon: state.route.coords[0][0] } : null);
+  if (!start) { toast('Waiting for GPS before placing a photo.', 4000); return; }
+  pendingGalleryPhoto = { file, lat: start.lat, lon: start.lon };
+  document.getElementById('photoPlaceModal').classList.remove('hidden');
+  ensureFineTuneMap('photo', start.lat, start.lon, (lat, lon) => {
+    if (pendingGalleryPhoto) { pendingGalleryPhoto.lat = lat; pendingGalleryPhoto.lon = lon; }
+  });
+}
+
+function wirePhotoPlacementModal() {
+  document.getElementById('cancelPhotoPlaceBtn').onclick = () => {
+    pendingGalleryPhoto = null;
+    document.getElementById('photoPlaceModal').classList.add('hidden');
+  };
+  document.getElementById('confirmPhotoPlaceBtn').onclick = () => {
+    const pending = pendingGalleryPhoto;
+    pendingGalleryPhoto = null;
+    document.getElementById('photoPlaceModal').classList.add('hidden');
+    if (pending) addPhoto(pending.file, { lat: pending.lat, lon: pending.lon });
+  };
 }
 
 // Stands in for a server-side TTL policy (Google Cloud Console's TTL setup
@@ -3938,25 +4057,35 @@ function renderEventItem(ev) {
     : 'just now';
   const meta = eventMetaLine(ev);
   const whenLine = meta ? `${when} · ${meta}` : when;
+  // The wrapping <div class="event-item-body"> (not a bare <div>) matters
+  // here: .event-item is a flex row, and without min-width:0 on the flex
+  // item holding the text, a long line (the state-crossing facts line
+  // especially — nine facts joined with " · ", easily the longest text any
+  // event type produces) refuses to shrink/wrap to fit and overflows
+  // horizontally — which the surrounding <details> accordion's
+  // overflow:hidden then silently clips, looking exactly like the text got
+  // cut off partway through. Photo events already used this class and
+  // never showed the bug; comment/state/city/timezone used a bare <div>
+  // and could.
   if (ev.type === 'comment') {
-    return `<div class="event-item"><div class="event-icon">💬</div><div>
+    return `<div class="event-item"><div class="event-icon">💬</div><div class="event-item-body">
       <div class="item-main">${escapeHtml(ev.text || '')}</div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
   if (ev.type === 'state') {
-    return `<div class="event-item"><div class="event-icon state-event-icon">🤖</div><div>
+    return `<div class="event-item"><div class="event-icon state-event-icon">🤖</div><div class="event-item-body">
       <div class="item-main">🏁 Just entered ${escapeHtml(ev.stateName || '')} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
       <div class="item-sub">${escapeHtml(stateEventFactsLine(ev))}</div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
   if (ev.type === 'city') {
-    return `<div class="event-item"><div class="event-icon city-event-icon">🏙️</div><div>
+    return `<div class="event-item"><div class="event-icon city-event-icon">🏙️</div><div class="event-item-body">
       <div class="item-main">🏁 Just entered ${escapeHtml(ev.cityName || '')} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
       <div class="item-sub">${escapeHtml(cityEventFactsLine(ev))}</div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
   if (ev.type === 'timezone') {
-    return `<div class="event-item"><div class="event-icon tz-event-icon">🕐</div><div>
+    return `<div class="event-item"><div class="event-icon tz-event-icon">🕐</div><div class="event-item-body">
       <div class="item-main">🕐 ${escapeHtml(ev.text || `Just entered the ${ev.tzName || ''} time zone`)} <span class="muted" style="font-weight:400;font-size:11px;">(system comment)</span></div>
       <div class="item-sub">${whenLine}</div></div></div>`;
   }
@@ -4358,13 +4487,22 @@ function restoreShareInputState(s) {
 }
 
 function wireSharing() {
-  const handleMediaFile = (e) => {
+  // Camera: "here, right now" is already correct — tag and upload straight
+  // away exactly as before. Gallery: could be a photo from an hour ago, or
+  // from before the trip even started — route it through the placement
+  // modal instead so the location can actually be right. See addPhoto()'s
+  // overrideLoc comment.
+  document.getElementById('mediaFileInputCamera').addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];
     if (file) addPhoto(file);
     e.target.value = '';
-  };
-  document.getElementById('mediaFileInputCamera').addEventListener('change', handleMediaFile);
-  document.getElementById('mediaFileInputGallery').addEventListener('change', handleMediaFile);
+  });
+  document.getElementById('mediaFileInputGallery').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (file) openPhotoPlacement(file);
+  });
+  wirePhotoPlacementModal();
   renderSharePanel();
 }
 
@@ -6132,7 +6270,11 @@ const HELP_TOPICS = {
         weather.</li>
         <li>Use 📷/🎥/💬 to drop a geotagged photo, video link, or comment —
         each is tagged with GPS coordinates, temperature, and elevation at
-        that moment.</li>
+        that moment. 📷 offers <b>Take Photo</b> (tagged with right-here,
+        right-now, same as always) or <b>Choose from Gallery</b> — a gallery
+        pick could be from anywhere, so it opens a small map to drag the pin
+        to where it was actually taken instead of assuming your current
+        spot.</li>
         <li>🤖 Crossing a state line adds one of these automatically too —
         capital, population, GDP, bird, tree, flower, nickname, statehood
         date, and which party currently runs that state's government, about
