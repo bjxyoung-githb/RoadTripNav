@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b1220">
+<title>Road Trip Navigator</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="assets/icon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="assets/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<!-- The ?v= below is the actual fix for "I accept the update but it doesn't
+     change anything": the version-check banner (see app.js's
+     checkForAppUpdate()) reloads THIS document with its own cache-busting
+     query param, but that only forces a fresh fetch of index.html itself —
+     it does nothing about app.js/style.css, which the browser (and GitHub
+     Pages' own CDN) are free to keep serving stale from cache under their
+     unchanged, un-busted URLs, since a URL's query string is part of what
+     the cache key is. Giving these two a version-tied query string makes
+     every real release a brand-new URL, which can never be a stale cache
+     hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
+     version.json's "version" on every release — all three drift back out
+     of sync otherwise, and this exact bug comes right back. -->
+<link rel="stylesheet" href="style.css?v=v2026.11.08.1">
+</head>
+<body>
+
+<!-- If this page was opened via a shared "watch" link, cover the screen
+     with a simple loading message immediately — before the browser even
+     starts on the render-blocking Leaflet/Firebase <script> tags near the
+     bottom of this page. Without this, on a slow or spotty connection
+     (the norm for family following along on a road trip), the plain,
+     unhidden HTML underneath — the driver's own trip-setup form — sits
+     fully visible for however long those scripts take to load, and
+     whoever tapped the link understandably assumes it sent them to the
+     wrong place. app.js's own init() (see getAutoWatchPinFromUrl() /
+     watchTripFromLink()) does the real routing once it finally loads and
+     runs; this is purely a stopgap for the gap before that, which is why
+     the ?watch= check is duplicated here as a tiny inline script instead
+     of waiting for app.js. watchTripFromLink() hides this the instant it
+     takes over; the setTimeout below is just a safety net in case app.js
+     never runs at all (offline, a script error), so this can't get stuck
+     covering the page forever. Deliberately inline-styled rather than
+     relying on style.css, so it doesn't wait on that either. -->
+<div id="watchLinkLoading" class="hidden" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;background:#0b1220;color:#e8edf5;text-align:center;padding:20px;">
+  <div style="font-size:38px;">🧭</div>
+  <div style="font-size:17px;">Loading your family's trip…</div>
+</div>
+<script>
+(function () {
+  var pin = (new URLSearchParams(location.search).get('watch') || '').trim();
+  if (/^\d{4,8}$/.test(pin)) {
+    document.getElementById('watchLinkLoading').classList.remove('hidden');
+    setTimeout(function () {
+      var el = document.getElementById('watchLinkLoading');
+      if (el) el.classList.add('hidden');
+    }, 15000);
+  }
+})();
+</script>
+
+<header id="topbar">
+  <div class="brand">🧭 Road Trip Navigator</div>
+  <button id="voiceToggleBtn" class="ghost-btn small" title="Toggle voice guidance">🔊</button>
+  <div id="connStatus" class="conn-status conn-unknown">GPS: waiting…</div>
+  <button id="helpBtn" class="ghost-btn small" title="Help">❓</button>
+  <button id="settingsBtn" class="ghost-btn small">⚙</button>
+</header>
+
+<!-- HELP MODAL (context-sensitive: content is filled in based on what screen/section you asked from) -->
+<div id="helpModal" class="modal hidden">
+  <div class="modal-card help-card">
+    <h2 id="helpTitle">Help</h2>
+    <div id="helpBody"></div>
+    <div class="modal-actions">
+      <button id="closeHelpBtn" class="ghost-btn">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS / SETUP MODAL -->
+<div id="settingsModal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Settings</h2>
+    <label>OpenRouteService API key</label>
+    <input id="orsKeyInput" type="text" placeholder="Paste your free ORS API key here">
+    <div class="hint">
+      Free key: create an account at openrouteservice.org → Dashboard → Request a token
+      (choose the free "Standard" token). Needed for routing, turn-by-turn directions,
+      and destination search.
+    </div>
+
+    <label>Vehicle driving range on a full tank (miles, optional)</label>
+    <input id="rangeInput" type="number" min="0" placeholder="e.g. 400">
+    <div class="hint">Used for the fuel planner — warns you if the next gas stop is farther than your range.</div>
+
+    <label>Rest break reminder (minutes of continuous driving, 0 = off)</label>
+    <input id="breakInput" type="number" min="0" placeholder="120">
+
+    <label>Route preference</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefFastest" value="fastest"> Fastest route (uses highways/interstates as needed)</label>
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefBalanced" value="balanced"> Prefer back roads if it's not much slower</label>
+      <label class="radio-option"><input type="radio" name="routePref" id="routePrefAvoid" value="avoid-highways"> Always take back roads, no matter the time</label>
+    </div>
+    <div id="backRoadsToleranceRow" class="hidden">
+      <label>How many extra minutes of back roads are you OK with?</label>
+      <input id="backRoadsToleranceInput" type="number" min="0" placeholder="15">
+    </div>
+    <div class="hint">
+      Applies to route calculation, automatic rerouting, and tap-anywhere-for-ETA. "Back roads" means
+      ORS avoids limited-access highways/interstates entirely — it can't detect a slow left-lane
+      camper specifically, but staying off the interstate generally means an oncoming lane is
+      available to legally pass when the way ahead is clear.
+    </div>
+
+    <label>When you go off the planned route</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="rerouteMode" id="rerouteModeAsk" value="ask"> Ask me first (shows a Reroute button, and says it out loud once)</label>
+      <label class="radio-option"><input type="radio" name="rerouteMode" id="rerouteModeAuto" value="auto"> Reroute automatically, no prompt</label>
+    </div>
+    <div class="hint">
+      "Ask me first" only offers once per detour — decline it and a small
+      🔄 button stays available near the map if you change your mind, and it
+      resets once you're back on the planned route so the next detour asks
+      again.
+    </div>
+
+    <label>Location source</label>
+    <div class="radio-row">
+      <label class="radio-option"><input type="radio" name="locSource" id="locSourceDevice" value="device"> This device's own GPS (default, use on a phone)</label>
+      <label class="radio-option"><input type="radio" name="locSource" id="locSourceRelay" value="relay"> Phone via local relay (for a PC with no GPS)</label>
+    </div>
+    <div id="relayUrlRow" class="hidden">
+      <input id="relayUrlInput" type="text" placeholder="https://192.168.1.23:8443">
+      <div class="hint">
+        Requires the small relay app from the <code>pc-relay</code> folder running on your
+        phone's own network — see its README. Open this URL directly in this same browser
+        once first (to accept its security warning) before saving it here.
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="saveSettingsBtn" class="primary-btn">Save</button>
+      <button id="closeSettingsBtn" class="ghost-btn">Close</button>
+    </div>
+    <div class="app-version-slot app-version"></div>
+  </div>
+</div>
+
+<!-- DESTINATION / SETUP SCREEN -->
+<div id="setupScreen" class="setup-screen">
+  <div class="setup-card">
+    <div id="resumeLegBanner" class="resume-leg-banner hidden">
+      <div class="resume-leg-text">You have an unfinished trip to <span id="resumeLegDest">–</span> from earlier — pick up right where you left off? <button class="help-btn" data-help="resume-banner" title="Help" aria-label="Help">?</button></div>
+      <div class="resume-leg-actions">
+        <button id="resumeLegBtn" class="primary-btn small">▶ Resume Trip</button>
+        <button id="discardLegBtn" class="ghost-btn small">Discard</button>
+      </div>
+    </div>
+
+    <button id="watchTripLink" class="primary-btn" style="width:100%;margin-bottom:18px;">👀 Watch someone else's shared trip</button>
+
+    <div id="myTripsPanel" class="hidden" style="margin-bottom:18px;">
+      <h3>My past trip logs <button class="help-btn" data-help="my-trips" title="Help" aria-label="Help">?</button></h3>
+      <details id="myTripsDetails">
+        <summary id="myTripsSummary">Show past legs</summary>
+        <div id="myTripsList" class="legs-list" style="margin-top:10px;"></div>
+        <div class="row" style="margin-top:10px;">
+          <input id="addKnownPinInput" type="text" inputmode="numeric" placeholder="Already have an old passcode or link? Paste it here" maxlength="200">
+          <button id="addKnownPinBtn" class="ghost-btn small">Add</button>
+        </div>
+      </details>
+    </div>
+
+    <h1>Plan your trip's next leg <button class="help-btn" data-help="setup-overview" title="Help" aria-label="Help">?</button></h1>
+    <p class="muted">Uses this phone's own GPS as the starting point automatically. You can also set a manual start.</p>
+
+    <button id="enableVoiceBtn" class="ghost-btn" style="width:100%;margin-bottom:14px;">🔊 Enable Voice Guidance</button>
+
+    <label>Starting point <button class="help-btn" data-help="start-point" title="Help" aria-label="Help">?</button></label>
+    <div class="row">
+      <input id="startInput" type="text" placeholder="Using live GPS location" disabled>
+      <button id="manualStartBtn" class="ghost-btn small">Set manually</button>
+    </div>
+    <div id="startResults" class="results-list"></div>
+    <div id="startFineTune" class="fine-tune hidden">
+      <div class="hint">Drag the pin (or tap the map) if this isn't the exact spot:</div>
+      <div id="startFineTuneMap" class="fine-tune-map"></div>
+    </div>
+
+    <label>Destination city or address <button class="help-btn" data-help="destination" title="Help" aria-label="Help">?</button></label>
+    <input id="destInput" type="text" placeholder="e.g. Grand Canyon National Park, AZ">
+    <div id="destResults" class="results-list"></div>
+    <div id="destFineTune" class="fine-tune hidden">
+      <div class="hint">Drag the pin (or tap the map) if this isn't the exact spot:</div>
+      <div id="destFineTuneMap" class="fine-tune-map"></div>
+    </div>
+
+    <label>Label this leg (optional)</label>
+    <input id="legLabelInput" type="text" placeholder="e.g. Day 3 - to Sedona">
+
+    <div id="tripPlanSection" style="margin-top:14px;">
+      <label>Planning multiple days? <button class="help-btn" data-help="trip-plan" title="Help" aria-label="Help">?</button></label>
+      <div class="row" style="gap:8px;">
+        <button id="addStopBtn" class="ghost-btn small" disabled>➕ Add as a stop, plan another day</button>
+        <button id="clearTripPlanBtn" class="ghost-btn small hidden">Clear plan</button>
+      </div>
+      <div id="tripPlanList" class="legs-list hidden" style="margin-top:10px;"></div>
+      <button id="calcTripPlanBtn" class="primary-btn hidden" style="margin-top:10px;">🚀 Calculate &amp; Start Trip Plan</button>
+      <div class="hint" id="tripPlanHint">Fill in a destination above, then tap "Add as a stop" instead of Calculate Route — each stop becomes a day's leg with its own overnight marker, and you'll get ONE shared link that covers the whole plan.</div>
+    </div>
+
+    <button id="calcRouteBtn" class="primary-btn" disabled>Calculate Route</button>
+    <div id="setupError" class="error-text"></div>
+
+    <div id="legsPanel">
+      <h3>Saved legs <button class="help-btn" data-help="saved-legs" title="Help" aria-label="Help">?</button></h3>
+      <div id="legsList" class="legs-list"></div>
+    </div>
+
+    <div class="app-version-slot app-version"></div>
+  </div>
+</div>
+
+<!-- WATCH (VIEWER) SCREEN -->
+<div id="watchScreen" class="setup-screen hidden">
+  <div class="setup-card">
+    <div id="watchPinEntry">
+      <h1>Watch a trip <button class="help-btn" data-help="watch-pin-overview" title="Help" aria-label="Help">?</button></h1>
+      <p class="muted">Enter the passcode the traveler shared with you to see their live location, photos, and comments.</p>
+
+      <label>Trip passcode</label>
+      <input id="watchPinInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code">
+      <button id="watchGoBtn" class="primary-btn">Watch</button>
+      <div id="watchError" class="error-text"></div>
+      <div class="app-version-slot app-version"></div>
+    </div>
+
+    <div id="watchLive" class="hidden">
+      <div id="watchTripTitle" class="watch-trip-title hidden"></div>
+      <div class="watch-status-row">
+        <div id="watchStatus" class="watch-status muted">Connecting…</div>
+        <button class="help-btn" data-help="watch-live-overview" title="Help" aria-label="Help">?</button>
+      </div>
+      <div class="trip-progress">
+        <div class="trip-progress-caption">
+          <span>Trip progress</span>
+          <span id="watchProgressPct" class="trip-progress-pct">–</span>
+        </div>
+        <div class="trip-progress-track">
+          <div id="watchProgressFill" class="trip-progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+      <div id="watchItineraryPanel" class="hidden" style="margin:10px 0;">
+        <div class="section-title-row" style="margin:0 0 6px;">
+          <span class="small-label">🗺️ Trip Plan</span>
+          <button class="help-btn" data-help="watch-itinerary" title="Help" aria-label="Help">?</button>
+        </div>
+        <div id="watchItineraryList" class="legs-list"></div>
+      </div>
+
+      <div id="watchWeather" class="watch-weather muted"></div>
+      <div id="watchElevation" class="watch-weather muted"></div>
+      <div id="watchMap" class="watch-map"></div>
+
+      <div id="viewerRepliesPanel" class="viewer-messages-panel viewer-replies-panel hidden">
+        <div class="section-title-row" style="margin:0 0 6px;">
+          <span class="small-label">🚗 Reply from the Traveler</span>
+          <button class="help-btn" data-help="watch-replies" title="Help" aria-label="Help">?</button>
+        </div>
+        <div id="viewerRepliesList" class="viewer-messages-list"></div>
+      </div>
+
+      <div class="viewer-message-compose">
+        <div class="section-title-row" style="margin:10px 0 6px;">
+          <span class="small-label">💬 Send a message</span>
+          <button class="help-btn" data-help="watch-send-message" title="Help" aria-label="Help">?</button>
+        </div>
+        <input id="watchNameInput" type="text" placeholder="Your name" maxlength="40">
+        <div class="row" style="margin-top:8px;">
+          <input id="watchMessageInput" type="text" placeholder="Message the driver…" maxlength="300">
+          <button id="watchSendMsgBtn" class="ghost-btn small">Send</button>
+        </div>
+      </div>
+
+      <details>
+        <summary>⛰ Mountains Nearby <button class="help-btn" data-help="watch-mountains" title="Help" aria-label="Help">?</button></summary>
+        <div id="watchPeaksPanel" class="panel-body muted">Loading…</div>
+        <div class="hint small">Named peaks near the traveler's location by straight-line distance — not a guaranteed line-of-sight view.</div>
+      </details>
+
+      <div class="section-title-row muted small-label">📝 Trip Log <button class="help-btn" data-help="watch-events" title="Help" aria-label="Help">?</button></div>
+      <div id="watchEvents" class="watch-events"></div>
+      <button id="watchBackBtn" class="ghost-btn" style="width:100%;margin-top:14px;">← Back</button>
+      <div class="app-version-slot app-version"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN DASHBOARD -->
+<div id="dashboard" class="dashboard hidden">
+  <div id="map"></div>
+
+  <!-- Off-route reroute offer — see maybeReroute()/offerReroute() in app.js.
+       Fixed-position so it stays visible over the map in both normal and
+       full-map view; hidden unless actually off-route. -->
+  <div id="rerouteOfferBanner" class="reroute-offer-banner hidden">
+    <div class="reroute-offer-text">Looks like you're taking a different way. Recalculate the route from here? <button class="help-btn" data-help="reroute-offer" title="Help" aria-label="Help">?</button></div>
+    <div class="reroute-offer-actions">
+      <button id="rerouteOfferYesBtn" class="primary-btn small">🔄 Reroute</button>
+      <button id="rerouteOfferNoBtn" class="ghost-btn small">Keep Going This Way</button>
+    </div>
+  </div>
+  <button id="rerouteOfferChip" class="reroute-offer-chip hidden" title="Reroute from here" aria-label="Reroute from here">🔄 Reroute</button>
+
+  <div id="viewerMessagesPanel" class="viewer-messages-panel hidden">
+    <div class="section-title-row" style="margin:0 0 6px;">
+      <span class="small-label">💬 Messages from Family</span>
+      <button class="help-btn" data-help="viewer-messages" title="Help" aria-label="Help">?</button>
+    </div>
+    <div id="viewerMessagesList" class="viewer-messages-list"></div>
+  </div>
+
+  <div id="turnBanner" class="turn-banner">
+    <div id="statNextTurn" class="turn-instruction">–</div>
+    <div id="statNextTurnDist" class="turn-dist">Next turn</div>
+  </div>
+
+  <div class="trip-progress">
+    <div class="trip-progress-caption">
+      <span id="tripProgressLabel">Trip progress</span> <button class="help-btn" data-help="trip-progress" title="Help" aria-label="Help">?</button>
+      <span id="tripProgressPct" class="trip-progress-pct">–</span>
+    </div>
+    <div class="trip-progress-track">
+      <div id="tripProgressFill" class="trip-progress-fill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <div class="stats-row">
+    <div class="stat">
+      <div class="stat-val" id="statMilesLeft">–</div>
+      <div class="stat-lbl">Miles left</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="statEta">–</div>
+      <div class="stat-eta-date" id="statEtaDate"></div>
+      <div class="stat-lbl">ETA</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="statSpeed">–</div>
+      <div class="stat-lbl">MPH</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val stat-val-sm" id="statElevation">–</div>
+      <div class="stat-lbl">Elevation</div>
+    </div>
+  </div>
+
+  <button id="endLegBtn" class="primary-btn end-leg-btn">🏁 End This Leg / Plan Next Leg</button>
+
+  <div id="accordion" class="accordion">
+
+    <details>
+      <summary>⛽ Fuel Planner <button class="help-btn" data-help="fuel-planner" title="Help" aria-label="Help">?</button></summary>
+      <div id="fuelPanel" class="panel-body muted">Set your vehicle range in Settings to enable.</div>
+    </details>
+
+    <details open>
+      <summary>🌦 Weather Ahead <button class="help-btn" data-help="weather-ahead" title="Help" aria-label="Help">?</button></summary>
+      <div id="weatherPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>⚠️ Road &amp; Weather Alerts <button class="help-btn" data-help="alerts" title="Help" aria-label="Help">?</button></summary>
+      <div id="alertsPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>📍 Upcoming Stops <button class="help-btn" data-help="upcoming-stops" title="Help" aria-label="Help">?</button></summary>
+      <div id="poiPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>⛰ Mountains Nearby <button class="help-btn" data-help="mountains-nearby" title="Help" aria-label="Help">?</button></summary>
+      <div id="peaksPanel" class="panel-body muted">Loading…</div>
+      <div class="hint small">Named peaks near your location by straight-line distance — not a guaranteed line-of-sight view.</div>
+    </details>
+
+    <details>
+      <summary>☀️ Daylight <button class="help-btn" data-help="daylight" title="Help" aria-label="Help">?</button></summary>
+      <div id="daylightPanel" class="panel-body muted">Loading…</div>
+    </details>
+
+    <details>
+      <summary>🚗 Drive Timer <button class="help-btn" data-help="drive-timer" title="Help" aria-label="Help">?</button></summary>
+      <div id="breakPanel" class="panel-body muted">–</div>
+    </details>
+
+    <details>
+      <summary>🧭 Full turn-by-turn <button class="help-btn" data-help="turn-by-turn" title="Help" aria-label="Help">?</button></summary>
+      <div id="stepsPanel" class="panel-body steps-list"></div>
+    </details>
+
+    <details>
+      <summary>📡 Share &amp; Trip Log <button class="help-btn" data-help="share-trip-log" title="Help" aria-label="Help">?</button></summary>
+      <div id="sharePanel" class="panel-body">Loading…</div>
+      <input id="mediaFileInputCamera" type="file" accept="image/*" capture="environment" class="hidden">
+      <input id="mediaFileInputGallery" type="file" accept="image/*" class="hidden">
+    </details>
+
+  </div>
+</div>
+
+<!-- Where a gallery-picked photo was actually taken — see openPhotoPlacement()
+     in app.js. Not needed for a just-taken camera photo (current GPS is
+     already right), only for one picked from the gallery that could be from
+     anywhere. -->
+<div id="photoPlaceModal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Where was this taken?</h2>
+    <div id="photoFineTune" class="fine-tune hidden">
+      <div class="hint">Drag the pin (or tap the map) to where you actually took this photo — it starts on your current location as a guess:</div>
+      <div id="photoFineTuneMap" class="fine-tune-map"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="cancelPhotoPlaceBtn" class="ghost-btn">Cancel</button>
+      <button id="confirmPhotoPlaceBtn" class="primary-btn">📷 Add Photo Here</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<div id="photoLightbox" class="lightbox hidden">
+  <button id="lightboxCloseBtn" class="lightbox-close" aria-label="Close">✕</button>
+  <img id="lightboxImg" src="" alt="Trip photo, enlarged">
+  <div class="lightbox-actions">
+    <a id="lightboxSaveBtn" href="#" download="trip-photo.jpg" class="lightbox-action-btn">⬇ Save</a>
+    <button type="button" id="lightboxShareBtn" class="lightbox-action-btn">📤 Share</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="assets/us-states-data.js?v=v2026.09.27.2"></script>
+<script src="assets/us-cities-data.js?v=v2026.09.27.2"></script>
+<script src="assets/us-timezones-data.js?v=v2026.09.27.2"></script>
+<script src="app.js?v=v2026.11.08.1"></script>
+</body>
+</html>

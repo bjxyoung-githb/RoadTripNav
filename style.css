@@ -494,6 +494,10 @@ details[open] summary::after { transform: rotate(90deg); }
   border-radius: 6px; white-space: nowrap; user-select: none;
 }
 .map-toggle-btn:hover { background: #17233d; }
+/* This trip's running high/low elevation — see addElevationRangeControl().
+   Informational only (nothing to tap), so no hover/pointer affordance. */
+.elev-range-btn { cursor: default; }
+.elev-range-btn:hover { background: #121a2e; }
 
 /* Auto-update-check banner — see checkForAppUpdate()/showUpdateBanner() */
 .update-banner {
