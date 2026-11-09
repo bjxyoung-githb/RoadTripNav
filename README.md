@@ -255,6 +255,14 @@ Tapping **End This Leg** (or **Stop Sharing** on its own) avoids that.
   current location.
 - **Drive Timer** — tracks continuous driving time (based on GPS speed) and
   pops up a reminder at the interval you set in Settings.
+- **Trip elevation badge** (v2026.11.08) — a small ⛰ high/low label stacked
+  in with the zoom/fullscreen buttons at the top-left of the map, updating in
+  real time off the same route elevation data used for the Elevation stat
+  below the map. "The trip" here means everything since you last tapped
+  Start Sharing This Leg for a brand-new share — continuing an existing
+  share from leg to leg (or day to day on a Trip Plan) keeps building the
+  same high/low rather than resetting it, the same way the passcode carries
+  over. Stays hidden until the first elevation reading comes in.
 - **Keeps your screen awake while navigating** — same trick Google Maps and
   other nav apps use, so a phone mounted in the car (especially one set to
   auto-lock on detected motion) doesn't dim or lock mid-drive. Turns on
@@ -324,9 +332,14 @@ Tapping **End This Leg** (or **Stop Sharing** on its own) avoids that.
   (temperature comes from whatever "Weather Ahead" last fetched for your
   current spot — up to about 10 minutes old — rather than a fresh lookup
   every time, to keep this free and fast; entries added before this feature
-  existed just won't show that line). Photos are automatically
-  shrunk/compressed and stored right in the app to keep this feature
-  entirely free (see section 7). Video works a little differently: record
+  existed just won't show that line). 📷 offers **Take Photo** (tagged with
+  right-here-right-now GPS, same as always) or **Choose from Gallery** —
+  since a gallery pick could be from anywhere (earlier in the drive, even
+  before the trip started), that one opens a small map first so you can drag
+  the pin to where it was actually taken instead of wherever you happen to
+  be standing when you get around to adding it (v2026.11.08). Photos are
+  automatically shrunk/compressed and stored right in the app to keep this
+  feature entirely free (see section 7). Video works a little differently: record
   it with your phone's normal camera app, upload it to Google Drive (or
   wherever you like), set its sharing to "Anyone with the link," and paste
   that link in — the app never handles the video file itself, just the
