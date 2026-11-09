@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.11.08.1';
+const APP_VERSION = 'v2026.11.08.2';
 
 /* ============================== UTILITIES ============================== */
 
