@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.11.08.2';
+const APP_VERSION = 'v2026.11.25.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -554,8 +554,24 @@ function streetHasDistinctiveMatch(streetText, resultLabel) {
   return words.some((w) => label.includes(w));
 }
 
+// Strips ALL whitespace (not just leading/trailing — Settings already
+// .trim()s on save) from the saved ORS key before it's ever put on the
+// wire. Pasting a key on a phone from a text message/email/notes app that
+// visually wrapped it can leave a stray space or newline embedded in the
+// MIDDLE of the string even though both ends look clean — .trim() never
+// touches that, but a raw newline/space in an HTTP header value makes the
+// browser's fetch() reject the request before it ever reaches the
+// network, which surfaces here as a bare "Failed to fetch" with no ORS
+// error body to explain why (see friendlyRouteError()). Reading through
+// this helper everywhere the key is actually used means a key saved
+// before this fix shipped gets self-healed too, with no re-entering
+// Settings required.
+function getOrsKey() {
+  return (state.settings.orsKey || '').replace(/\s+/g, '');
+}
+
 async function orsGeocode(text) {
-  const key = state.settings.orsKey;
+  const key = getOrsKey();
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
   const focus = getStartCoords();
   let url = `https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&size=8&boundary.country=US`;
@@ -612,7 +628,7 @@ async function orsGeocode(text) {
 // for Pelias' structured search endpoint, which parses each field independently instead
 // of relying on free-text parsing (which sometimes drops the house number).
 async function orsGeocodeStructured(text, focus) {
-  const key = state.settings.orsKey;
+  const key = getOrsKey();
   const parts = text.split(',').map((p) => p.trim()).filter(Boolean);
   if (!parts.length) return [];
   const address = parts[0];
@@ -654,12 +670,26 @@ function friendlyRouteError(e, start, dest) {
     const label = point && point.label ? point.label : (isStart ? 'your starting point' : 'that destination');
     return `Couldn't find a drivable road near ${isStart ? 'your starting point' : label} — it's likely on private property, an unmapped road, or open land with no through-road nearby. Try dragging the pin onto the nearest real road on the fine-tune map, or search for a slightly different address.`;
   }
+  // "Failed to fetch" (Chrome/Safari) / "NetworkError when attempting to
+  // fetch resource" (Firefox) is the browser's generic fetch() rejection —
+  // it means the request never got an HTTP response at all, so this is
+  // NOT a bad/expired API key (that comes back as "Routing failed (401/
+  // 403): ..." below, since ORS still answers, just with an error body).
+  // The two things that actually produce this: no internet connection
+  // right now, or — seen in the wild once already — a key pasted on a
+  // phone that picked up a stray embedded space/newline from wherever it
+  // was copied, which getOrsKey() now strips out, but a fresh install that
+  // hasn't reopened Settings since pasting could still be mid-way through
+  // hitting this.
+  if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+    return "Couldn't reach the routing service — check your internet connection. If it keeps happening, try re-opening Settings and re-saving your ORS API key (reselect and copy it fresh, in case how it was shared added an extra space or line break in the middle of it).";
+  }
   return msg;
 }
 
 async function orsRoute(start, end, opts) {
   opts = opts || {};
-  const key = state.settings.orsKey;
+  const key = getOrsKey();
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
   const body = {
     coordinates: [[start.lon, start.lat], [end.lon, end.lat]],
@@ -807,7 +837,7 @@ function describeRouteChoice(route) {
 // here (or no match) just means the popup shows without a name, never
 // blocks showing the ETA itself.
 async function orsReverseGeocode(lat, lon) {
-  const key = state.settings.orsKey;
+  const key = getOrsKey();
   if (!key) return null;
   try {
     const url = `https://api.openrouteservice.org/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lat=${lat}&point.lon=${lon}&size=1`;
@@ -5621,7 +5651,10 @@ function wireSettingsModal() {
   routePrefAvoidRadio.addEventListener('change', syncToleranceRowVisibility);
 
   saveBtn.addEventListener('click', () => {
-    state.settings.orsKey = orsInput.value.trim();
+    // Strip ALL whitespace, not just the ends — see getOrsKey()'s comment
+    // for why a plain .trim() alone isn't enough for a key pasted on a
+    // phone from something that visually wrapped it.
+    state.settings.orsKey = orsInput.value.replace(/\s+/g, '');
     state.settings.rangeMiles = rangeInput.value ? parseFloat(rangeInput.value) : null;
     state.settings.breakMinutes = breakInput.value ? parseInt(breakInput.value, 10) : 0;
     const newLocationSource = locRelayRadio.checked ? 'relay' : 'device';
