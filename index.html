@@ -25,7 +25,7 @@
      hit. This has to be bumped by hand alongside APP_VERSION (app.js) and
      version.json's "version" on every release — all three drift back out
      of sync otherwise, and this exact bug comes right back. -->
-<link rel="stylesheet" href="style.css?v=v2026.11.26.2">
+<link rel="stylesheet" href="style.css?v=v2026.11.26.3">
 </head>
 <body>
 
@@ -92,6 +92,14 @@
       Free key: create an account at openrouteservice.org → Dashboard → Request a token
       (choose the free "Standard" token). Needed for routing, turn-by-turn directions,
       and destination search.
+    </div>
+
+    <label>Google Maps API key (optional)</label>
+    <input id="googleKeyInput" type="text" placeholder="Paste your Google Maps API key here">
+    <div class="hint">
+      Only used as a fallback when OpenRouteService's search can't pin down an exact
+      address (rural routes/highway addresses are the common case) — everyday searches
+      still use the free ORS key above. Leave blank to skip this entirely.
     </div>
 
     <label>Vehicle driving range on a full tank (miles, optional)</label>
@@ -453,6 +461,6 @@
 <script src="assets/us-states-data.js?v=v2026.09.27.2"></script>
 <script src="assets/us-cities-data.js?v=v2026.09.27.2"></script>
 <script src="assets/us-timezones-data.js?v=v2026.09.27.2"></script>
-<script src="app.js?v=v2026.11.26.2"></script>
+<script src="app.js?v=v2026.11.26.3"></script>
 </body>
 </html>
