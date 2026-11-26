@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.11.25.1';
+const APP_VERSION = 'v2026.11.26.1';
 
 /* ============================== UTILITIES ============================== */
 
@@ -570,13 +570,41 @@ function getOrsKey() {
   return (state.settings.orsKey || '').replace(/\s+/g, '');
 }
 
+// ORS retired its old api.openrouteservice.org host in favor of
+// api.heigit.org (announced April 2026, old host's shutdown window was
+// November 2-6, 2026 — already past). Existing API keys carry over as-is,
+// no new key needed. Path prefixes changed per-service:
+//   /v2/directions/...  -> /openrouteservice/v2/directions/...
+//   /geocode/...         -> /pelias/v1/...  (Pelias' own standard API shape:
+//                           /search, /search/structured, /reverse)
+// This is almost certainly what was behind search silently failing with a
+// bare "Failed to fetch" (a network-level failure with no readable error
+// body) while Calculate Route kept working via manually-pasted
+// coordinates — the two hit different paths on the old host, so one could
+// go dark before the other during the rollout. Tries the new host first;
+// falls back to the old host ONLY on a network-level failure (never got
+// any HTTP response at all) — not on an ordinary error response like a
+// bad key or rate limit, which is informative and should surface as-is —
+// since that's the single ambiguous case genuinely worth a retry on the
+// other host while ORS's own migration finishes settling.
+async function orsFetch(newUrl, oldUrl, opts) {
+  try {
+    return await fetch(newUrl, opts);
+  } catch (e) {
+    return await fetch(oldUrl, opts);
+  }
+}
+
 async function orsGeocode(text) {
   const key = getOrsKey();
   if (!key) throw new Error('No ORS API key set. Open Settings to add one.');
   const focus = getStartCoords();
-  let url = `https://api.openrouteservice.org/geocode/search?api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&size=8&boundary.country=US`;
-  if (focus) url += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
-  const res = await fetch(url);
+  let qs = `api_key=${encodeURIComponent(key)}&text=${encodeURIComponent(text)}&size=8&boundary.country=US`;
+  if (focus) qs += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
+  const res = await orsFetch(
+    `https://api.heigit.org/pelias/v1/search?${qs}`,
+    `https://api.openrouteservice.org/geocode/search?${qs}`,
+  );
   if (!res.ok) throw new Error('Geocoding failed (' + res.status + ')');
   const json = await res.json();
   let results = (json.features || []).map(mapGeocodeFeature);
@@ -638,13 +666,16 @@ async function orsGeocodeStructured(text, focus) {
     const m = parts[2].match(/^([A-Za-z .]+)\s*(\d{5})?$/);
     if (m) { region = m[1].trim(); postalcode = m[2] || ''; } else { region = parts[2]; }
   }
-  let url = `https://api.openrouteservice.org/geocode/search/structured?api_key=${encodeURIComponent(key)}&address=${encodeURIComponent(address)}&size=5`;
-  if (locality) url += `&locality=${encodeURIComponent(locality)}`;
-  if (region) url += `&region=${encodeURIComponent(region)}`;
-  if (postalcode) url += `&postalcode=${encodeURIComponent(postalcode)}`;
-  url += `&boundary.country=US`;
-  if (focus) url += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
-  const res = await fetch(url);
+  let qs = `api_key=${encodeURIComponent(key)}&address=${encodeURIComponent(address)}&size=5`;
+  if (locality) qs += `&locality=${encodeURIComponent(locality)}`;
+  if (region) qs += `&region=${encodeURIComponent(region)}`;
+  if (postalcode) qs += `&postalcode=${encodeURIComponent(postalcode)}`;
+  qs += `&boundary.country=US`;
+  if (focus) qs += `&focus.point.lon=${focus.lon}&focus.point.lat=${focus.lat}`;
+  const res = await orsFetch(
+    `https://api.heigit.org/pelias/v1/search/structured?${qs}`,
+    `https://api.openrouteservice.org/geocode/search/structured?${qs}`,
+  );
   if (!res.ok) return [];
   const json = await res.json();
   return (json.features || []).map(mapGeocodeFeature);
@@ -702,11 +733,16 @@ async function orsRoute(start, end, opts) {
   // — see calcRouteWithPreference() for how this feeds the route-preference
   // setting (always-back-roads, or back-roads-if-not-much-slower).
   if (opts.avoidHighways) body.options = { avoid_features: ['highways'] };
-  const res = await fetch('https://api.openrouteservice.org/v2/directions/driving-car/geojson', {
+  const fetchOpts = {
     method: 'POST',
     headers: { 'Authorization': key, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  };
+  const res = await orsFetch(
+    'https://api.heigit.org/openrouteservice/v2/directions/driving-car/geojson',
+    'https://api.openrouteservice.org/v2/directions/driving-car/geojson',
+    fetchOpts,
+  );
   if (!res.ok) {
     const t = await res.text().catch(() => '');
     throw new Error('Routing failed (' + res.status + '): ' + t.slice(0, 200));
@@ -840,8 +876,11 @@ async function orsReverseGeocode(lat, lon) {
   const key = getOrsKey();
   if (!key) return null;
   try {
-    const url = `https://api.openrouteservice.org/geocode/reverse?api_key=${encodeURIComponent(key)}&point.lat=${lat}&point.lon=${lon}&size=1`;
-    const res = await fetch(url);
+    const qs = `api_key=${encodeURIComponent(key)}&point.lat=${lat}&point.lon=${lon}&size=1`;
+    const res = await orsFetch(
+      `https://api.heigit.org/pelias/v1/reverse?${qs}`,
+      `https://api.openrouteservice.org/geocode/reverse?${qs}`,
+    );
     if (!res.ok) return null;
     const json = await res.json();
     const f = json.features && json.features[0];
