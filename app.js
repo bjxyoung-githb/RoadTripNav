@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.11.26.1';
+const APP_VERSION = 'v2026.11.26.2';
 
 /* ============================== UTILITIES ============================== */
 
@@ -5421,6 +5421,21 @@ function wireSetupScreen() {
     if (!text || text.length < 3) { destResults.innerHTML = ''; return; }
     try {
       const results = await orsGeocode(text);
+      // Stale-response guard: debounce() only cancels a PENDING timer, not
+      // an already-in-flight fetch — pausing mid-sentence (autocorrect,
+      // glancing at the keyboard) can let an earlier, shorter, less
+      // specific search (e.g. "...dewey" typed so far) actually dispatch
+      // before you finish typing the rest. If that request happens to take
+      // longer to come back than the one for your finished, more specific
+      // text — orsFetch()'s host-migration fallback retry is exactly the
+      // kind of thing that can make an EARLIER request take LONGER than a
+      // later one — its results land last and silently overwrite the
+      // better match with stale, broader-matching junk (this is how a
+      // half-typed "...dewey" turned into a dropdown full of unrelated
+      // "Dew*" towns instead of your actual address). Discarding any
+      // response that no longer matches what's currently in the box fixes
+      // this regardless of which request happened to finish last.
+      if (destInput.value !== text) return;
       destResults.innerHTML = results.map((r, i) =>
         `<div class="result-item" data-i="${i}">${r.label} ${layerBadge(r.layer)}</div>`).join('');
       Array.from(destResults.children).forEach((child, i) => {
@@ -5436,6 +5451,7 @@ function wireSetupScreen() {
         };
       });
     } catch (e) {
+      if (destInput.value !== text) return; // stale request's error — see the comment above
       errEl.textContent = e.message;
     }
   }, 450);
@@ -5476,6 +5492,10 @@ function wireSetupScreen() {
     if (!text || text.length < 3) { startResults.innerHTML = ''; return; }
     try {
       const results = await orsGeocode(text);
+      // Stale-response guard — see searchDest()'s comment for why an
+      // earlier, in-flight request can land after a later, more specific
+      // one and silently overwrite good results with worse ones.
+      if (startInput.value !== text) return;
       startResults.innerHTML = results.map((r, i) =>
         `<div class="result-item" data-i="${i}">${r.label} ${layerBadge(r.layer)}</div>`).join('');
       Array.from(startResults.children).forEach((child, i) => {
@@ -5492,6 +5512,7 @@ function wireSetupScreen() {
         };
       });
     } catch (e) {
+      if (startInput.value !== text) return; // stale request's error
       errEl.textContent = e.message;
     }
   }, 450);
