@@ -63,6 +63,24 @@ This powers the routing, turn-by-turn directions, and destination search.
 The free tier gives you 2,000 routing requests and 1,000 geocoding
 (destination search) requests per day, far more than you'll need.
 
+### Optional: a Google Maps API key, for rural/highway addresses (v2026.11.26)
+
+OpenRouteService's destination search is built on OpenStreetMap, which
+sometimes doesn't have a rural route or highway address mapped down to an
+exact point — you'll see it match only at the city level ("City area" tag)
+no matter how precisely you type the street address. If that's a recurring
+problem for addresses you search often (a family member out in the
+country, say), you can add a Google Maps API key in Settings: it's used
+*only* as a fallback when ORS genuinely can't find anything better than a
+city-level match, never for ordinary searches, so it costs nothing in
+practice and the free ORS key keeps doing the everyday work. Results from
+it are tagged "Exact (Google)" so you always know which service actually
+found the spot. See the in-app Settings hint for what it needs
+(a Cloud project with billing enabled, the Maps JavaScript API and
+Geocoding API turned on, and a key restricted to your app's URL). Entirely
+optional — without one, the app behaves exactly as it always has, and the
+drag-the-pin fine-tune map still gets you to the exact spot by hand either way.
+
 ## 2. Using it each day
 
 1. Open your bookmarked URL on your phone.
