@@ -14,7 +14,7 @@
 // alone does NOT guarantee that; see the comment above the stylesheet
 // link in index.html for the full story (this was a real bug, not just a
 // caution: it's why "accept update" could keep doing nothing).
-const APP_VERSION = 'v2026.11.26.2';
+const APP_VERSION = 'v2026.11.26.3';
 
 /* ============================== UTILITIES ============================== */
 
@@ -282,7 +282,7 @@ function forgetOwnTrip(pin) {
 
 function loadSettings() {
   const defaults = {
-    orsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false,
+    orsKey: '', googleMapsKey: '', rangeMiles: null, breakMinutes: 120, voiceEnabled: false,
     locationSource: 'device', // 'device' (this device's own GPS, default) | 'relay' (phone via local relay, for PCs without GPS)
     relayUrl: '',
     // Route preference — see calcRouteWithPreference():
@@ -570,6 +570,57 @@ function getOrsKey() {
   return (state.settings.orsKey || '').replace(/\s+/g, '');
 }
 
+function getGoogleMapsKey() {
+  return (state.settings.googleMapsKey || '').replace(/\s+/g, '');
+}
+
+// Lazy-loads the Google Maps JavaScript API script at most once per
+// session (only ever needed if/when orsGeocode() actually falls all the
+// way through to Google — see its comment — so most sessions never load
+// this at all). Cached as a module-level promise rather than per-call so
+// a second fallback later in the same session reuses the already-loaded
+// script instead of re-injecting it.
+let googleMapsLoadPromise = null;
+function loadGoogleMapsScript(key) {
+  if (googleMapsLoadPromise) return googleMapsLoadPromise;
+  googleMapsLoadPromise = new Promise((resolve, reject) => {
+    if (window.google && window.google.maps && window.google.maps.Geocoder) { resolve(); return; }
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}`;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Google Maps'));
+    document.head.appendChild(script);
+  });
+  return googleMapsLoadPromise;
+}
+
+// Last-resort address lookup via Google's Geocoding service, used only
+// from inside orsGeocode() when ORS's own data (OpenStreetMap-based) has
+// nothing at address precision — see that function's comment for when
+// this actually fires. Returns [] (never throws) on any failure, since
+// this is always a best-effort extra try layered on top of ORS, which
+// already returned its own (lower-precision) results by the time this
+// runs.
+async function googleGeocode(text) {
+  const key = getGoogleMapsKey();
+  if (!key) return [];
+  try {
+    await loadGoogleMapsScript(key);
+    const geocoder = new google.maps.Geocoder();
+    const resp = await geocoder.geocode({ address: text, componentRestrictions: { country: 'US' } });
+    return (resp.results || []).map((r) => ({
+      label: r.formatted_address,
+      lat: r.geometry.location.lat(),
+      lon: r.geometry.location.lng(),
+      layer: 'google', // see layerBadge() and isTrustworthyAddressHit() above
+      confidence: null,
+    }));
+  } catch (e) {
+    return [];
+  }
+}
+
 // ORS retired its old api.openrouteservice.org host in favor of
 // api.heigit.org (announced April 2026, old host's shutdown window was
 // November 2-6, 2026 — already past). Existing API keys carry over as-is,
@@ -628,7 +679,10 @@ async function orsGeocode(text) {
   const hasHouseNumber = /^\s*\d+\s+\S/.test(text);
   const houseNumMatch = text.match(/^\s*\d+\s+([^,]+)/);
   const streetText = houseNumMatch ? houseNumMatch[1] : '';
-  const isTrustworthyAddressHit = (r) => r.layer === 'address' && streetHasDistinctiveMatch(streetText, r.label);
+  // A Google-sourced hit (see googleGeocode() below) is trusted outright —
+  // Google's own geocoder already matched the street name internally, so
+  // there's no separate label to cross-check the way there is for ORS.
+  const isTrustworthyAddressHit = (r) => r.layer === 'google' || (r.layer === 'address' && streetHasDistinctiveMatch(streetText, r.label));
   const hasAddressHit = results.some(isTrustworthyAddressHit);
   if (hasHouseNumber && !hasAddressHit) {
     try {
@@ -639,6 +693,29 @@ async function orsGeocode(text) {
         structured.forEach((r) => { if (!seen.has(r.label)) { results.push(r); seen.add(r.label); } });
       }
     } catch (e) { /* structured search is a best-effort extra try; ignore failures */ }
+  }
+  // Still nothing at trustworthy address precision after ORS's own best
+  // effort (including the structured retry just above) — this is the
+  // genuine OSM data-coverage gap case (a rural route/highway address OSM
+  // simply doesn't have mapped to a point; see the 746 Highway 170 case
+  // this was built for), not a parsing bug the structured retry can fix.
+  // Try Google's commercially-maintained address data as a last-resort
+  // fallback, ONLY when configured (Settings → Google Maps API key) and
+  // ONLY once ORS has genuinely come up empty — most searches never reach
+  // this far, which keeps Google calls rare (both for cost and for the
+  // 30-day-storage terms on Google's geocoding results — see the chat
+  // where this was discussed) and keeps the free ORS key doing the
+  // everyday work.
+  if (hasHouseNumber && !results.some(isTrustworthyAddressHit) && getGoogleMapsKey()) {
+    try {
+      const googleResults = await googleGeocode(text);
+      const seen = new Set(results.map((r) => r.label));
+      // Google's hits go first — once ORS has nothing better than a
+      // city-level match, a decent Google result is almost always the one
+      // you actually want, and isTrustworthyAddressHit()/the sort below
+      // already ranks 'google'-layer results at the top regardless.
+      googleResults.forEach((r) => { if (!seen.has(r.label)) { results.unshift(r); seen.add(r.label); } });
+    } catch (e) { /* best-effort extra try; ignore failures */ }
   }
   if (hasHouseNumber) {
     // A trustworthy address match floats to the top; other layers
@@ -5367,6 +5444,7 @@ function renderLegsList() {
 }
 
 function layerBadge(layer) {
+  if (layer === 'google') return '<span class="badge good">Exact (Google)</span>';
   if (layer === 'address' || layer === 'venue') return '<span class="badge good">Exact</span>';
   if (layer === 'street') return '<span class="badge warn">Street only</span>';
   if (layer === 'postalcode') return '<span class="badge warn">ZIP area</span>';
@@ -5660,6 +5738,7 @@ function wireSettingsModal() {
   const closeBtn = document.getElementById('closeSettingsBtn');
   const saveBtn = document.getElementById('saveSettingsBtn');
   const orsInput = document.getElementById('orsKeyInput');
+  const googleInput = document.getElementById('googleKeyInput');
   const rangeInput = document.getElementById('rangeInput');
   const breakInput = document.getElementById('breakInput');
   const locDeviceRadio = document.getElementById('locSourceDevice');
@@ -5688,6 +5767,7 @@ function wireSettingsModal() {
 
   function openModal() {
     orsInput.value = state.settings.orsKey || '';
+    googleInput.value = state.settings.googleMapsKey || '';
     rangeInput.value = state.settings.rangeMiles || '';
     breakInput.value = state.settings.breakMinutes != null ? state.settings.breakMinutes : 120;
     (state.settings.locationSource === 'relay' ? locRelayRadio : locDeviceRadio).checked = true;
@@ -5715,6 +5795,7 @@ function wireSettingsModal() {
     // for why a plain .trim() alone isn't enough for a key pasted on a
     // phone from something that visually wrapped it.
     state.settings.orsKey = orsInput.value.replace(/\s+/g, '');
+    state.settings.googleMapsKey = googleInput.value.replace(/\s+/g, '');
     state.settings.rangeMiles = rangeInput.value ? parseFloat(rangeInput.value) : null;
     state.settings.breakMinutes = breakInput.value ? parseInt(breakInput.value, 10) : 0;
     const newLocationSource = locRelayRadio.checked ? 'relay' : 'device';
